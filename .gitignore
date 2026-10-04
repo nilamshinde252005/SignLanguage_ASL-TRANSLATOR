@@ -39,3 +39,14 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# --- not needed on GitHub ---
+# Python environment from earlier experiments (very large)
+/venv/
+# editor settings (Android Studio / IntelliJ)
+/.idea/
+# old versions and scratch files
+/backup/
+/Claude outputs/
+# old hand model, no longer used by the app
+/public/models/hand_landmarker.task
