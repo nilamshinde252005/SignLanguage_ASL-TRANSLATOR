@@ -9,8 +9,10 @@ import { INPUT_SIZE, N_COLS, type ModelWindow } from './preprocess';
 const LITERT_VERSION = '2.5.3'; // keep in step with @litertjs/core in package.json
 const LITERT_WASM = `https://cdn.jsdelivr.net/npm/@litertjs/core@${LITERT_VERSION}/wasm/`;
 
-export const MODEL_URL = '/models/asl_transformer/asl_int8.tflite';
-export const SIGNS_URL = '/models/asl_transformer/signs.json';
+// On GitHub Pages the site sits under /<repo-name>/, so files in /public need that prefix too.
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
+export const MODEL_URL = `${BASE_PATH}/models/asl_transformer/asl_int8.tflite`;
+export const SIGNS_URL = `${BASE_PATH}/models/asl_transformer/signs.json`;
 
 export interface Guess {
   sign: string; // tidy label, e.g. "thank you"
@@ -77,7 +79,7 @@ async function createClassifier(): Promise<Classify> {
   await (getGlobalLiteRtPromise() ?? loadLiteRt(LITERT_WASM));
   const modelResponse = await fetch(MODEL_URL);
   if (!modelResponse.ok) {
-    throw new Error(`Model file not found at public${MODEL_URL}. Download asl_int8.tflite from Kaggle.`);
+    throw new Error('Model file not found at public/models/asl_transformer/asl_int8.tflite. Download it from Kaggle.');
   }
   const model = await loadAndCompile(new Uint8Array(await modelResponse.arrayBuffer()), {
     accelerator: 'wasm',
