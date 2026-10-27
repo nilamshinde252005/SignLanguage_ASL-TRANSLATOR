@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Local-only folders (not on GitHub)
+    "venv/**",
+    "backup/**",
+    "Claude outputs/**",
   ]),
 ]);
 

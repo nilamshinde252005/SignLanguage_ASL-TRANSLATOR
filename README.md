@@ -1,5 +1,11 @@
 # ASL Translator
 
+[![CI/CD](https://github.com/nilamshinde252005/SignLanguage_ASL-TRANSLATOR/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/nilamshinde252005/SignLanguage_ASL-TRANSLATOR/actions/workflows/ci-cd.yml)
+
+**Live demo:** https://nilamshinde252005.github.io/SignLanguage_ASL-TRANSLATOR/ (Chrome recommended, allow the camera)
+
+<!-- Add a screenshot or GIF here: ![Demo](docs/demo.gif) -->
+
 A website that watches you through your webcam and turns **American Sign Language** into subtitles, live in the browser.
 
 - **Letters mode:** fingerspell 15 ASL letters (A B C D E F G I L O S U V W Y), with a picture guide for every letter.
@@ -24,6 +30,26 @@ npm run dev
 
 Then open http://localhost:3000 in Chrome and allow the camera.
 
+## Tests
+
+```bash
+npm test        # run the unit tests once (Vitest)
+npm run lint    # ESLint
+```
+
+Unit tests in `src/lib/asl/__tests__/` cover the letter rules (including scale invariance),
+letter typing, sign segmentation, the model input preparation (padding, resampling to 64 steps,
+mirroring) and arm-raised detection.
+
+## CI/CD and deployment
+
+`.github/workflows/ci-cd.yml` runs on every push and pull request:
+
+1. **Lint + unit tests** – must pass before anything is deployed.
+2. **GitHub Pages** – builds the static site and publishes it.
+3. **AWS EC2** – builds the site and deploys it over SSH (`rsync`) to an Ubuntu server running
+   nginx with HTTPS (Let's Encrypt). Setup guide: [`deploy/EC2_DEPLOYMENT.md`](deploy/EC2_DEPLOYMENT.md).
+
 ## Project layout
 
 | Path | What it does |
@@ -33,6 +59,8 @@ Then open http://localhost:3000 in Chrome and allow the camera.
 | `src/lib/asl/classifier.ts` | Loads the model and asks it for its top guesses |
 | `src/lib/asl/letters.ts` | Rules for the fingerspelled letters |
 | `src/lib/asl/alphabet.ts` | Letter guide pictures and descriptions |
+| `src/lib/asl/__tests__/` | Unit tests (Vitest) |
+| `deploy/` | EC2 server setup script, nginx config and deployment guide |
 | `public/models/asl_transformer/` | The trained model (`asl_int8.tflite`) and its list of 250 signs |
 
 ## Credits

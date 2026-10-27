@@ -1,0 +1,103 @@
+# CI/CD pipeline
+#   1. test        – every push and pull request: install, lint, run unit tests
+#   2. deploy-pages – pushes to main: build the static site and publish to GitHub Pages
+#   3. deploy-ec2   – pushes to main: build the site and copy it to the AWS EC2 server
+#                     (runs only after the EC2 server is set up – see deploy/EC2_DEPLOYMENT.md)
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: # adds a "Run workflow" button on the Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install packages
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Unit tests
+        run: npm test
+
+  build-pages:
+    name: Build for GitHub Pages
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build the static website
+        run: npm run build
+        env:
+          PAGES_BASE_PATH: /${{ github.event.repository.name }}
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: ./out
+
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    needs: build-pages
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
+
+  deploy-ec2:
+    name: Deploy to AWS EC2
+    needs: test
+    # Skipped until the repository variable EC2_HOST is set (Settings → Secrets and variables → Actions → Variables)
+    if: github.event_name != 'pull_request' && vars.EC2_HOST != ''
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ec2
+      cancel-in-progress: false
+    env:
+      EC2_HOST: ${{ vars.EC2_HOST }}
+      EC2_USER: ${{ vars.EC2_USER || 'ubuntu' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build the static website (served from the domain root)
+        run: npm run build
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2_key
+          chmod 600 ~/.ssh/ec2_key
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+      - name: Copy the site to the server
+        run: |
+          rsync -az --delete -e "ssh -i ~/.ssh/ec2_key" out/ "$EC2_USER@$EC2_HOST:/var/www/asl-translator/"
+      - name: Check the live site responds
+        run: curl --fail --silent --show-error --max-time 20 "https://$EC2_HOST/" > /dev/null || curl --fail --silent --show-error --max-time 20 "http://$EC2_HOST/" > /dev/null
