@@ -17,7 +17,7 @@ import { loadClassifier, type Classify, type Guess } from '../lib/asl/classifier
 import { ALPHABET, type AlphabetLetter } from '../lib/asl/alphabet';
 import { classifyLetter, LetterTyper, type P3 } from '../lib/asl/letters';
 import { SignSegmenter, hasHand, holisticFrame, isArmUp, toWindow } from '../lib/asl/preprocess';
-
+import { Recorder } from '../lib/asl/recorder';
 // Pinned versions: the WASM files must match the npm package version exactly.
 const MEDIAPIPE_VERSION = '0.10.35';
 const MEDIAPIPE_WASM = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`;
@@ -38,6 +38,7 @@ export default function SignTranslator() {
   const classifyRef = useRef<Classify | null>(null);
   const segmenterRef = useRef(new SignSegmenter());
   const typerRef = useRef(new LetterTyper());
+  const recorderRef = useRef(new Recorder());
   const modeRef = useRef<Mode>('letters');
   const busyRef = useRef(false); // true while the sign model is thinking
   const lastShownRef = useRef('');
@@ -50,6 +51,8 @@ export default function SignTranslator() {
   const [signing, setSigning] = useState(false);
   const [subtitle, setSubtitle] = useState('');
   const [tip, setTip] = useState('');
+  const [recordingLetter, setRecordingLetter] = useState<string | null>(null);
+  const [recordedCount, setRecordedCount] = useState(0);
 
   const addText = useCallback((text: string) => setSubtitle((s) => s + text), [setSubtitle]);
 
@@ -143,6 +146,7 @@ export default function SignTranslator() {
         // Use the hand that is higher on screen (smaller y) as the spelling hand.
         const hand = [...hands].sort((a, b) => a[0].y - b[0].y)[0];
         const letter = hand ? classifyLetter(hand) : null;
+        recorderRef.current.add(hand);
         showLive(!hand ? 'No hand detected' : letter ? `Letter: ${letter}` : 'Spelling…');
         const typed = typerRef.current.push(letter, !!hand);
         if (typed) addText(typed);
@@ -209,6 +213,29 @@ export default function SignTranslator() {
       landmarkerRef.current = null;
     };
   }, [addText, showLive]);
+
+// Recording training data: hold a letter key on the keyboard to record that letter.
+useEffect(() => {
+  const recorder = recorderRef.current;
+  const onKeyDown = (event: KeyboardEvent) => {
+    const key = event.key.toUpperCase();
+    if (/^[A-Z]$/.test(key)) {
+      recorder.label = key;
+      setRecordingLetter(key);
+    }
+  };
+  const onKeyUp = () => {
+    recorder.label = null;
+    setRecordingLetter(null);
+    setRecordedCount(recorder.count);
+  };
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+  return () => {
+    window.removeEventListener('keydown', onKeyDown);
+    window.removeEventListener('keyup', onKeyUp);
+  };
+}, []);
 
   const shown = subtitle.length > SUBTITLE_CHARS ? '…' + subtitle.slice(-SUBTITLE_CHARS) : subtitle;
   const currentLetter = live.startsWith('Letter: ') ? live.slice('Letter: '.length) : null;
@@ -293,6 +320,21 @@ export default function SignTranslator() {
           Clear
         </button>
       </div>
+      {mode === 'letters' && (
+        <div className="mt-4 text-center text-sm">
+          <p>
+            {recordingLetter
+              ? `Recording ${recordingLetter}…`
+              : `Hold a letter key to record it. Examples saved: ${recordedCount}`}
+          </p>
+          <button
+            onClick={() => recorderRef.current.download()}
+            className="mt-2 px-4 py-2 rounded-lg border-2 border-leaf font-semibold hover:bg-leaf hover:text-cream transition-colors"
+          >
+            Download data (CSV)
+          </button>
+        </div>
+      )}
 
       <p className="text-sm text-leaf-soft mt-5 max-w-xl text-center">
         {mode === 'letters'
