@@ -10,7 +10,7 @@ const LITERT_VERSION = '2.5.3'; // keep in step with @litertjs/core in package.j
 const LITERT_WASM = `https://cdn.jsdelivr.net/npm/@litertjs/core@${LITERT_VERSION}/wasm/`;
 
 // On GitHub Pages the site sits under /<repo-name>/, so files in /public need that prefix too.
-const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
+export const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
 export const MODEL_URL = `${BASE_PATH}/models/asl_transformer/asl_int8.tflite`;
 export const SIGNS_URL = `${BASE_PATH}/models/asl_transformer/signs.json`;
 
@@ -69,14 +69,23 @@ function quietLiteRtLogs() {
   };
 }
 
-async function createClassifier(): Promise<Classify> {
+/**
+ * Starts LiteRT (the program that runs .tflite models) once per page and returns it.
+ * Shared by the sign model and the letter model.
+ */
+export async function startLiteRt() {
   quietLiteRtLogs(); // must run before LiteRT is loaded
 
   // Imported here (not at the top) so Next.js never tries to load it on the server.
-  const { Tensor, getGlobalLiteRtPromise, loadAndCompile, loadLiteRt } = await import('@litertjs/core');
+  const litert = await import('@litertjs/core');
 
-  // Start LiteRT unless an earlier attempt already did.
-  await (getGlobalLiteRtPromise() ?? loadLiteRt(LITERT_WASM));
+  // Start LiteRT unless something else already did.
+  await (litert.getGlobalLiteRtPromise() ?? litert.loadLiteRt(LITERT_WASM));
+  return litert;
+}
+
+async function createClassifier(): Promise<Classify> {
+  const { Tensor, loadAndCompile } = await startLiteRt();
   const modelResponse = await fetch(MODEL_URL);
   if (!modelResponse.ok) {
     throw new Error('Model file not found at public/models/asl_transformer/asl_int8.tflite. Download it from Kaggle.');
