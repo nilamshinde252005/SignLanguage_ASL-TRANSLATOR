@@ -18,6 +18,7 @@ import { ALPHABET, type AlphabetLetter } from '../lib/asl/alphabet';
 import { classifyLetter, LetterTyper, type P3 } from '../lib/asl/letters';
 import { SignSegmenter, hasHand, holisticFrame, isArmUp, toWindow } from '../lib/asl/preprocess';
 import { Recorder } from '../lib/asl/recorder';
+import { loadLetterModel, type ReadLetter } from '../lib/asl/letterModel';
 // Pinned versions: the WASM files must match the npm package version exactly.
 const MEDIAPIPE_VERSION = '0.10.35';
 const MEDIAPIPE_WASM = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`;
@@ -26,6 +27,7 @@ const HOLISTIC_MODEL =
 
 const MIN_CONFIDENCE = 0.4; // only add a word to the subtitles if the AI is at least 40% sure
 const SUBTITLE_CHARS = 90; // how much of the subtitle text to show
+const MIN_LETTER_CONFIDENCE = 0.7; // only use the letter model's answer if it is at least 70% sure
 const MIN_HAND_FRAMES = 10; // fewer than this (~1/3 s) usually means the sign was rushed
 
 type Mode = 'letters' | 'signs';
@@ -39,6 +41,9 @@ export default function SignTranslator() {
   const segmenterRef = useRef(new SignSegmenter());
   const typerRef = useRef(new LetterTyper());
   const recorderRef = useRef(new Recorder());
+  const readLetterRef = useRef<ReadLetter | null>(null); // my trained letter model (null = not loaded)
+  const modelLetterRef = useRef<string | null>(null); // its most recent answer
+  const letterBusyRef = useRef(false); // true while the letter model is thinking
   const modeRef = useRef<Mode>('letters');
   const busyRef = useRef(false); // true while the sign model is thinking
   const lastShownRef = useRef('');
@@ -105,6 +110,16 @@ export default function SignTranslator() {
       }
     }
 
+    // ---- 2b. Load my letter model (if it fails, Letters mode uses the old rules) ----
+    async function loadLetters() {
+      try {
+        const readLetter = await loadLetterModel();
+        if (!cancelled) readLetterRef.current = readLetter;
+      } catch (error) {
+        console.error('Letter model failed to load, using the old rules instead:', error);
+      }
+    }
+
     // ---- 3. Camera ----
     async function startCamera() {
       const video = videoRef.current;
@@ -145,7 +160,15 @@ export default function SignTranslator() {
       if (modeRef.current === 'letters') {
         // Use the hand that is higher on screen (smaller y) as the spelling hand.
         const hand = [...hands].sort((a, b) => a[0].y - b[0].y)[0];
-        const letter = hand ? classifyLetter(hand) : null;
+        let letter: string | null = null;
+        if (hand && readLetterRef.current) {
+          if (!letterBusyRef.current) askLetterModel(hand); // runs in the background
+          letter = modelLetterRef.current; // the model's most recent answer
+        } else if (hand) {
+          letter = classifyLetter(hand); // backup: the old hand-written rules
+        } else {
+          modelLetterRef.current = null; // no hand, so forget the old answer
+        }
         recorderRef.current.add(hand);
         showLive(!hand ? 'No hand detected' : letter ? `Letter: ${letter}` : 'Spelling…');
         const typed = typerRef.current.push(letter, !!hand);
@@ -158,6 +181,20 @@ export default function SignTranslator() {
         if (frames) recognise(frames);
         else if (!segmenter.active && !busyRef.current) showLive('Raise your hand and sign');
         else if (segmenter.active) showLive('Watching…');
+      }
+    }
+
+    async function askLetterModel(points: P3[]) {
+      const readLetter = readLetterRef.current;
+      if (!readLetter) return;
+      letterBusyRef.current = true;
+      try {
+        const guess = await readLetter(points);
+        modelLetterRef.current = guess.probability >= MIN_LETTER_CONFIDENCE ? guess.letter : null;
+      } catch (error) {
+        console.error('Letter model failed:', error);
+      } finally {
+        letterBusyRef.current = false;
       }
     }
 
@@ -188,7 +225,7 @@ export default function SignTranslator() {
 
     (async () => {
       try {
-        await Promise.all([loadLandmarker(), loadSigns()]);
+        await Promise.all([loadLandmarker(), loadSigns(), loadLetters()]);
         if (cancelled) return;
         setStatus('Models loaded. Starting camera…');
         await startCamera();
