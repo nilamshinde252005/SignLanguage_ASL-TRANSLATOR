@@ -6,6 +6,7 @@ import "./globals.css";
 const atkinson = Atkinson_Hyperlegible_Next({
   variable: "--font-atkinson",
   subsets: ["latin"],
+  adjustFontFallback: false, // Next.js has no size data for this newer font, so skip the fallback tuning (silences a warning)
 });
 
 export const metadata: Metadata = {
