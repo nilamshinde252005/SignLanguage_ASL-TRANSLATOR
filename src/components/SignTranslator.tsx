@@ -1,36 +1,68 @@
 'use client';
 
 /**
- * ASL Translator
- *  - Letters mode: fingerspelled ASL letters, typed out one by one (geometry rules).
- *  - Signs mode:   250 everyday ASL signs, recognised by a trained model.
- * Both write into the subtitle bar under the video.
- *
- * Sign model: "ASL Realtime Transformer" by Ceyda Akin (CC BY 4.0),
- * preprocessing ported from github.com/ceydaakin/asl-realtime (MIT).
+ * ASL Translator: webcam → MediaPipe hand and body points → subtitles.
+ *  - Letters mode: 24 fingerspelled letters, read by my own trained model (the old rules are a backup).
+ *  - Signs mode:   250 everyday signs, read by "ASL Realtime Transformer" by Ceyda Akin (CC BY 4.0),
+ *                  preprocessing ported from github.com/ceydaakin/asl-realtime (MIT).
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { FilesetResolver, HolisticLandmarker } from '@mediapipe/tasks-vision';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { FilesetResolver, HolisticLandmarker, type HolisticLandmarkerResult } from '@mediapipe/tasks-vision';
 
 import { loadClassifier, type Classify, type Guess } from '../lib/asl/classifier';
-import { ALPHABET, type AlphabetLetter } from '../lib/asl/alphabet';
 import { classifyLetter, LetterTyper, type P3 } from '../lib/asl/letters';
+import { loadLetterModel, type LetterGuess, type ReadLetter } from '../lib/asl/letterModel';
 import { SignSegmenter, hasHand, holisticFrame, isArmUp, toWindow } from '../lib/asl/preprocess';
 import { Recorder } from '../lib/asl/recorder';
-import { loadLetterModel, type ReadLetter } from '../lib/asl/letterModel';
+import HowItWorks from './HowItWorks';
+import LetterGuide from './LetterGuide';
+import SignGuide from './SignGuide';
+
 // Pinned versions: the WASM files must match the npm package version exactly.
 const MEDIAPIPE_VERSION = '0.10.35';
 const MEDIAPIPE_WASM = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`;
 const HOLISTIC_MODEL =
   'https://storage.googleapis.com/mediapipe-models/holistic_landmarker/holistic_landmarker/float16/latest/holistic_landmarker.task';
 
-const MIN_CONFIDENCE = 0.4; // only add a word to the subtitles if the AI is at least 40% sure
-const SUBTITLE_CHARS = 90; // how much of the subtitle text to show
 const MIN_LETTER_CONFIDENCE = 0.7; // only use the letter model's answer if it is at least 70% sure
+const MIN_SIGN_CONFIDENCE = 0.4; // only add a sign to the subtitles if the sign model is at least 40% sure
 const MIN_HAND_FRAMES = 10; // fewer than this (~1/3 s) usually means the sign was rushed
+const CAPTION_CHARS = 60; // how much of the subtitles to show on top of the video
+const GITHUB_URL = 'https://github.com/nilamshinde252005/SignLanguage_ASL-TRANSLATOR';
+const DOT_COLOR = '#4b63ff'; // the accent blue, bright enough to show on any video
 
 type Mode = 'letters' | 'signs';
+type Step = 'loading' | 'ready' | 'failed';
+
+/** Loading progress of everything the page needs. */
+interface Loading {
+  camera: Step;
+  tracker: Step;
+  letters: Step;
+  signs: Step;
+}
+
+/** What the app is reading right now. `probability` is null when the old rules made the call. */
+interface Reading {
+  label: string | null;
+  probability: number | null;
+  message: string;
+}
+
+const HINTS: Record<Mode, string> = {
+  letters: 'Hold each letter still for half a second to type it. Lower your hand for a second to add a space.',
+  signs: 'Raise your hand, make one sign, then lower your hand. The word appears when your hand leaves the picture.',
+};
+
+/** `?record` in the address shows the training-data recorder (for collecting new examples). */
+const subscribeNothing = () => () => {};
+const useRecordMode = () =>
+  useSyncExternalStore(
+    subscribeNothing,
+    () => new URLSearchParams(window.location.search).has('record'),
+    () => false
+  );
 
 export default function SignTranslator() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -38,34 +70,44 @@ export default function SignTranslator() {
 
   const landmarkerRef = useRef<HolisticLandmarker | null>(null);
   const classifyRef = useRef<Classify | null>(null);
+  const readLetterRef = useRef<ReadLetter | null>(null); // my trained letter model (null = not loaded)
+  const letterGuessRef = useRef<LetterGuess | null>(null); // its most recent answer
+  const letterBusyRef = useRef(false); // true while the letter model is thinking
+  const signBusyRef = useRef(false); // true while the sign model is thinking
+  const wasSigningRef = useRef(false);
   const segmenterRef = useRef(new SignSegmenter());
   const typerRef = useRef(new LetterTyper());
   const recorderRef = useRef(new Recorder());
-  const readLetterRef = useRef<ReadLetter | null>(null); // my trained letter model (null = not loaded)
-  const modelLetterRef = useRef<string | null>(null); // its most recent answer
-  const letterBusyRef = useRef(false); // true while the letter model is thinking
   const modeRef = useRef<Mode>('letters');
-  const busyRef = useRef(false); // true while the sign model is thinking
-  const lastShownRef = useRef('');
+  const lastReadingRef = useRef('');
 
-  const [status, setStatus] = useState('Loading AI models…');
-  const [signsReady, setSignsReady] = useState<boolean | null>(null); // null = still loading
+  const recordMode = useRecordMode();
+  const [loading, setLoading] = useState<Loading>({
+    camera: 'loading',
+    tracker: 'loading',
+    letters: 'loading',
+    signs: 'loading',
+  });
+  const [error, setError] = useState('');
   const [mode, setMode] = useState<Mode>('letters');
-  const [live, setLive] = useState('Waiting for hand…'); // what the app sees right now
+  const [reading, setReading] = useState<Reading>({ label: null, probability: null, message: 'Starting…' });
   const [guesses, setGuesses] = useState<Guess[]>([]);
   const [signing, setSigning] = useState(false);
   const [subtitle, setSubtitle] = useState('');
   const [tip, setTip] = useState('');
+  const [copied, setCopied] = useState(false);
   const [recordingLetter, setRecordingLetter] = useState<string | null>(null);
   const [recordedCount, setRecordedCount] = useState(0);
 
-  const addText = useCallback((text: string) => setSubtitle((s) => s + text), [setSubtitle]);
+  const setStep = useCallback((part: keyof Loading, step: Step) => setLoading((l) => ({ ...l, [part]: step })), []);
+  const addText = useCallback((text: string) => setSubtitle((s) => s + text), []);
 
-  /** Only re-render when the live text actually changes (this runs ~30 times a second). */
-  const showLive = useCallback((text: string) => {
-    if (lastShownRef.current !== text) {
-      lastShownRef.current = text;
-      setLive(text);
+  /** Update the reading only when it visibly changes (the camera loop runs ~30 times a second). */
+  const showReading = useCallback((label: string | null, probability: number | null, message: string) => {
+    const key = `${label}|${probability === null ? '' : Math.round(probability * 20)}|${message}`;
+    if (lastReadingRef.current !== key) {
+      lastReadingRef.current = key;
+      setReading({ label, probability, message });
     }
   }, []);
 
@@ -73,10 +115,13 @@ export default function SignTranslator() {
     modeRef.current = next;
     segmenterRef.current.reset();
     typerRef.current = new LetterTyper();
+    letterGuessRef.current = null;
+    wasSigningRef.current = false;
     setGuesses([]);
     setTip('');
     setSigning(false);
     setMode(next);
+    showReading(null, null, next === 'letters' ? 'Show one hand to the camera' : 'Raise your hand and make one sign');
   };
 
   useEffect(() => {
@@ -86,58 +131,78 @@ export default function SignTranslator() {
     let clock = 0; // MediaPipe needs timestamps that always increase
     let stream: MediaStream | null = null;
 
-    // ---- 1. Load the dot finder (MediaPipe Holistic: face + body + both hands) ----
-    async function loadLandmarker() {
-      const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM);
-      const landmarker = await HolisticLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: HOLISTIC_MODEL, delegate: 'GPU' },
-        runningMode: 'VIDEO',
-      });
-      if (cancelled) landmarker.close();
-      else landmarkerRef.current = landmarker;
+    // ---- 1. Hand tracking (MediaPipe Holistic: face + body + both hands). Nothing works without it. ----
+    async function loadTracker() {
+      try {
+        const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM);
+        const landmarker = await HolisticLandmarker.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: HOLISTIC_MODEL, delegate: 'GPU' },
+          runningMode: 'VIDEO',
+        });
+        if (cancelled) return landmarker.close();
+        landmarkerRef.current = landmarker;
+        setStep('tracker', 'ready');
+        showReading(null, null, 'Show one hand to the camera');
+      } catch (err) {
+        console.error('Hand tracking failed to load:', err);
+        if (cancelled) return;
+        setStep('tracker', 'failed');
+        setError("Hand tracking couldn't load. Check your internet connection, then reload the page.");
+      }
     }
 
-    // ---- 2. Load the sign model (optional: letters still work without it) ----
+    // ---- 2. My letter model (if it fails, Letters mode uses the old rules) ----
+    async function loadLetters() {
+      try {
+        const readLetter = await loadLetterModel();
+        if (cancelled) return;
+        readLetterRef.current = readLetter;
+        setStep('letters', 'ready');
+      } catch (err) {
+        console.error('Letter model failed to load, using the old rules instead:', err);
+        if (!cancelled) setStep('letters', 'failed');
+      }
+    }
+
+    // ---- 3. The sign model (optional: letters still work without it) ----
     async function loadSigns() {
       try {
         const classify = await loadClassifier();
         if (cancelled) return;
         classifyRef.current = classify;
-        setSignsReady(true);
-      } catch (error) {
-        console.error('Sign model failed to load:', error);
-        if (!cancelled) setSignsReady(false);
+        setStep('signs', 'ready');
+      } catch (err) {
+        console.error('Sign model failed to load:', err);
+        if (!cancelled) setStep('signs', 'failed');
       }
     }
 
-    // ---- 2b. Load my letter model (if it fails, Letters mode uses the old rules) ----
-    async function loadLetters() {
-      try {
-        const readLetter = await loadLetterModel();
-        if (!cancelled) readLetterRef.current = readLetter;
-      } catch (error) {
-        console.error('Letter model failed to load, using the old rules instead:', error);
-      }
-    }
-
-    // ---- 3. Camera ----
+    // ---- 4. Camera ----
     async function startCamera() {
       const video = videoRef.current;
       if (!video) return;
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 1280, height: 720, facingMode: 'user' },
-      });
-      if (cancelled) {
-        stream.getTracks().forEach((t) => t.stop());
-        return;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 1280, height: 720, facingMode: 'user' },
+        });
+        if (cancelled) return stream.getTracks().forEach((t) => t.stop());
+        video.srcObject = stream;
+        await video.play();
+        setStep('camera', 'ready');
+        raf = requestAnimationFrame(loop);
+      } catch (err) {
+        console.error('Camera failed to start:', err);
+        if (cancelled) return;
+        setStep('camera', 'failed');
+        setError(
+          (err as Error)?.name === 'NotAllowedError'
+            ? 'The camera is blocked. Allow camera access in the address bar, then reload the page.'
+            : "The camera couldn't start. Close any other app that's using it, then reload the page."
+        );
       }
-      video.srcObject = stream;
-      await video.play();
-      setStatus('Camera on');
-      raf = requestAnimationFrame(loop);
     }
 
-    // ---- 4. Runs every frame ----
+    // ---- 5. Runs every frame ----
     function loop() {
       if (cancelled) return;
       raf = requestAnimationFrame(loop); // schedule first, so an error below never stops the loop
@@ -157,31 +222,49 @@ export default function SignTranslator() {
       ) as P3[][];
       draw(canvas, video, hands, result.poseLandmarks?.[0]);
 
-      if (modeRef.current === 'letters') {
-        // Use the hand that is higher on screen (smaller y) as the spelling hand.
-        const hand = [...hands].sort((a, b) => a[0].y - b[0].y)[0];
-        let letter: string | null = null;
-        if (hand && readLetterRef.current) {
-          if (!letterBusyRef.current) askLetterModel(hand); // runs in the background
-          letter = modelLetterRef.current; // the model's most recent answer
-        } else if (hand) {
-          letter = classifyLetter(hand); // backup: the old hand-written rules
-        } else {
-          modelLetterRef.current = null; // no hand, so forget the old answer
+      if (modeRef.current === 'letters') readLetterFrame(hands);
+      else readSignFrame(result);
+    }
+
+    function readLetterFrame(hands: P3[][]) {
+      // Use the hand that is higher on screen (smaller y) as the spelling hand.
+      const hand = [...hands].sort((a, b) => a[0].y - b[0].y)[0];
+      recorderRef.current.add(hand);
+
+      let letter: string | null = null;
+      let probability: number | null = null;
+      if (hand && readLetterRef.current) {
+        if (!letterBusyRef.current) askLetterModel(hand); // runs in the background
+        const guess = letterGuessRef.current; // the model's most recent answer
+        if (guess && guess.probability >= MIN_LETTER_CONFIDENCE) {
+          letter = guess.letter;
+          probability = guess.probability;
         }
-        recorderRef.current.add(hand);
-        showLive(!hand ? 'No hand detected' : letter ? `Letter: ${letter}` : 'Spelling…');
-        const typed = typerRef.current.push(letter, !!hand);
-        if (typed) addText(typed);
+      } else if (hand) {
+        letter = classifyLetter(hand); // backup: the old hand-written rules
       } else {
-        const segmenter = segmenterRef.current;
-        // isArmUp keeps the sign open if the hand is briefly lost in front of the face.
-        const frames = segmenter.push(holisticFrame(result), isArmUp(result.poseLandmarks?.[0]));
-        setSigning(segmenter.active);
-        if (frames) recognise(frames);
-        else if (!segmenter.active && !busyRef.current) showLive('Raise your hand and sign');
-        else if (segmenter.active) showLive('Watching…');
+        letterGuessRef.current = null; // no hand, so forget the old answer
       }
+
+      showReading(
+        letter,
+        probability,
+        !hand ? 'Show one hand to the camera' : letter ? 'Hold it still to type it' : 'Make a letter shape and hold it still'
+      );
+      const typed = typerRef.current.push(letter, !!hand);
+      if (typed) addText(typed);
+    }
+
+    function readSignFrame(result: HolisticLandmarkerResult) {
+      const segmenter = segmenterRef.current;
+      // isArmUp keeps the sign open if the hand is briefly lost in front of the face.
+      const frames = segmenter.push(holisticFrame(result), isArmUp(result.poseLandmarks?.[0]));
+      const active = segmenter.active;
+      setSigning(active);
+      if (frames) recognise(frames);
+      else if (active && !wasSigningRef.current) showReading(null, null, 'Watching your sign…');
+      else if (!active && wasSigningRef.current) showReading(null, null, 'Raise your hand and make one sign');
+      wasSigningRef.current = active;
     }
 
     async function askLetterModel(points: P3[]) {
@@ -189,10 +272,9 @@ export default function SignTranslator() {
       if (!readLetter) return;
       letterBusyRef.current = true;
       try {
-        const guess = await readLetter(points);
-        modelLetterRef.current = guess.probability >= MIN_LETTER_CONFIDENCE ? guess.letter : null;
-      } catch (error) {
-        console.error('Letter model failed:', error);
+        letterGuessRef.current = await readLetter(points);
+      } catch (err) {
+        console.error('Letter model failed:', err);
       } finally {
         letterBusyRef.current = false;
       }
@@ -200,48 +282,37 @@ export default function SignTranslator() {
 
     async function recognise(frames: Float32Array[]) {
       const classify = classifyRef.current;
-      if (!classify || busyRef.current) return;
-      busyRef.current = true;
+      if (!classify || signBusyRef.current) return;
+      signBusyRef.current = true;
+      showReading(null, null, 'Reading your sign…');
       try {
         const input = toWindow(frames);
-        if (!input.length) return;
+        if (!input.length) return showReading(null, null, 'Raise your hand and make one sign');
         const top = await classify(input);
         setGuesses(top);
         const handFrames = frames.filter(hasHand).length;
         setTip(handFrames < MIN_HAND_FRAMES ? 'That was very quick. Try signing a little slower.' : '');
         const best = top[0];
-        if (best && best.probability >= MIN_CONFIDENCE) {
-          showLive(`Sign: ${best.sign}`);
+        if (best && best.probability >= MIN_SIGN_CONFIDENCE) {
+          showReading(best.sign, best.probability, 'Added to the subtitles');
           addText(best.sign.toUpperCase() + ' ');
         } else {
-          showLive('Not sure. Try that sign again');
+          showReading(null, null, 'Not sure. Try that sign again');
         }
-      } catch (error) {
-        console.error('Sign recognition failed:', error);
+      } catch (err) {
+        console.error('Sign recognition failed:', err);
+        showReading(null, null, 'Something went wrong. Try that sign again');
       } finally {
-        busyRef.current = false;
+        signBusyRef.current = false;
       }
     }
 
-    (async () => {
-      try {
-        await Promise.all([loadLandmarker(), loadSigns(), loadLetters()]);
-        if (cancelled) return;
-        setStatus('Models loaded. Starting camera…');
-        await startCamera();
-      } catch (error) {
-        console.error(error);
-        if (cancelled) return;
-        const name = (error as Error)?.name;
-        setStatus(
-          name === 'NotAllowedError'
-            ? 'Camera permission denied. Allow the camera and reload.'
-            : 'Failed to start. Check your internet connection and the browser console.'
-        );
-      }
-    })();
+    void loadTracker();
+    void loadLetters();
+    void loadSigns();
+    void startCamera();
 
-    // ---- 5. Clean up when the page is closed ----
+    // ---- 6. Clean up when the page is closed ----
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf);
@@ -249,193 +320,367 @@ export default function SignTranslator() {
       landmarkerRef.current?.close();
       landmarkerRef.current = null;
     };
-  }, [addText, showLive]);
+  }, [addText, setStep, showReading]);
 
-// Recording training data: hold a letter key on the keyboard to record that letter.
-useEffect(() => {
-  const recorder = recorderRef.current;
-  const onKeyDown = (event: KeyboardEvent) => {
-    const key = event.key.toUpperCase();
-    if (/^[A-Z]$/.test(key)) {
-      recorder.label = key;
-      setRecordingLetter(key);
+  // Recording training data (only with ?record): hold a letter key to record that letter.
+  useEffect(() => {
+    if (!recordMode) return;
+    const recorder = recorderRef.current;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const key = event.key.toUpperCase();
+      if (/^[A-Z]$/.test(key)) {
+        recorder.label = key;
+        setRecordingLetter(key);
+      }
+    };
+    const onKeyUp = () => {
+      recorder.label = null;
+      setRecordingLetter(null);
+      setRecordedCount(recorder.count);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, [recordMode]);
+
+  const text = subtitle.trim();
+
+  const speak = () => {
+    if (!text || !('speechSynthesis' in window)) return;
+    window.speechSynthesis.cancel();
+    // Lower case, so "HELLO" is read as a word rather than spelled out.
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text.toLowerCase()));
+  };
+
+  const copy = async () => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (err) {
+      console.error('Copy failed:', err);
     }
   };
-  const onKeyUp = () => {
-    recorder.label = null;
-    setRecordingLetter(null);
-    setRecordedCount(recorder.count);
-  };
-  window.addEventListener('keydown', onKeyDown);
-  window.addEventListener('keyup', onKeyUp);
-  return () => {
-    window.removeEventListener('keydown', onKeyDown);
-    window.removeEventListener('keyup', onKeyUp);
-  };
-}, []);
 
-  const shown = subtitle.length > SUBTITLE_CHARS ? '…' + subtitle.slice(-SUBTITLE_CHARS) : subtitle;
-  const currentLetter = live.startsWith('Letter: ') ? live.slice('Letter: '.length) : null;
-
-  const modeButton = (value: Mode, label: string, disabled = false) => (
-    <button
-      onClick={() => switchMode(value)}
-      disabled={disabled}
-      aria-pressed={mode === value}
-      className={`px-5 py-2 rounded-full font-semibold transition-colors disabled:opacity-40 ${
-        mode === value ? 'bg-tomato text-cream' : 'text-leaf hover:bg-leaf/10'
-      }`}
-    >
-      {label}
-    </button>
-  );
+  const caption = subtitle.length > CAPTION_CHARS ? '…' + subtitle.slice(-CAPTION_CHARS) : subtitle;
+  const ready = Object.values(loading).every((step) => step === 'ready');
 
   return (
-    <div className="flex flex-col items-center min-h-screen bg-cream text-leaf px-4 py-8 sm:p-10">
-      {/* Poster-style title */}
-      <header className="text-center mb-6">
-        <h1 className="stamp font-display uppercase text-leaf leading-[0.85] text-6xl sm:text-7xl tracking-tight">
-          ASL <span className="text-tomato">Trans</span>lator
-        </h1>
-        <p className="mt-3 text-leaf-soft">Sign to subtitles, right in your browser</p>
-        <p className="mt-1 text-sm text-leaf-soft">Status: {status}</p>
+    <div className="min-h-screen">
+      <header className="mx-auto flex max-w-6xl items-center justify-between px-4 py-5 sm:px-6">
+        <span className="flex items-center gap-2.5 text-lg font-bold">
+          <HandMark />
+          ASL Translator
+        </span>
+        <a href={GITHUB_URL} className="text-sm font-semibold text-muted hover:text-ink">
+          View on GitHub
+        </a>
       </header>
 
-      {/* Mode switch */}
-      <div className="flex gap-1 p-1 mb-4 rounded-full border-2 border-leaf bg-paper">
-        {modeButton('letters', 'Letters')}
-        {modeButton('signs', 'Signs (250 words)', !signsReady)}
-      </div>
-      {signsReady === false && (
-        <p className="text-tomato-dark text-sm mb-3 max-w-xl text-center">
-          Sign model not found. Put <code>asl_int8.tflite</code> in <code>public/models/asl_transformer/</code> and reload.
-          Letters mode still works.
+      <main className="mx-auto max-w-6xl px-4 pb-16 sm:px-6">
+        <div className="mb-7 max-w-2xl">
+          <h1 className="text-3xl font-bold tracking-tight sm:text-[2.6rem] sm:leading-[1.1]">
+            Sign to your camera. Read it as subtitles.
+          </h1>
+          <p className="mt-3 text-lg text-muted">
+            Fingerspell 24 letters or sign 250 everyday words. It all runs in your browser, so your video never
+            leaves your device.
+          </p>
+        </div>
+
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+          {/* ---------- Camera ---------- */}
+          <div>
+            <div className="relative aspect-video overflow-hidden rounded-[20px] bg-[#0c0f14]">
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className="absolute inset-0 h-full w-full -scale-x-100 object-cover"
+              />
+              <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full -scale-x-100" />
+
+              {loading.camera !== 'ready' && (
+                <p className="absolute inset-0 grid place-items-center p-6 text-center text-white/75">
+                  {loading.camera === 'loading' ? 'Allow camera access to start' : 'Camera off'}
+                </p>
+              )}
+
+              {signing && (
+                <span className="absolute left-3 top-3 flex items-center gap-2 rounded-full bg-accent px-3 py-1 text-sm font-semibold text-accent-ink">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-current" /> Watching your sign
+                </span>
+              )}
+
+              {caption && (
+                <p
+                  aria-hidden="true"
+                  className="absolute inset-x-4 bottom-4 mx-auto w-fit max-w-[92%] rounded-md bg-black/80 px-3 py-1.5 text-center text-xl font-bold leading-snug text-white sm:text-2xl"
+                >
+                  {caption}
+                </p>
+              )}
+            </div>
+
+            {!ready && <LoadingList loading={loading} />}
+            {error && (
+              <p role="alert" className="mt-3 rounded-lg border border-warn/40 px-3 py-2 text-sm font-semibold text-warn">
+                {error}
+              </p>
+            )}
+          </div>
+
+          {/* ---------- Panel ---------- */}
+          <section aria-label="Translation" className="flex flex-col rounded-2xl border border-line bg-surface">
+            <div className="border-b border-line p-5">
+              <div className="flex rounded-full bg-page p-1" role="group" aria-label="What to read">
+                <ModeButton active={mode === 'letters'} onClick={() => switchMode('letters')}>
+                  Letters
+                </ModeButton>
+                <ModeButton
+                  active={mode === 'signs'}
+                  onClick={() => switchMode('signs')}
+                  disabled={loading.signs !== 'ready'}
+                >
+                  {loading.signs === 'loading' ? 'Signs (loading…)' : 'Signs'}
+                </ModeButton>
+              </div>
+              <p className="mt-3 text-sm text-muted">{HINTS[mode]}</p>
+            </div>
+
+            <div className="border-b border-line p-5">
+              {mode === 'letters' ? (
+                <div className="flex items-center gap-5">
+                  <span
+                    className={`w-[1.1ch] text-center text-[5.5rem] font-bold leading-none ${
+                      reading.label ? 'text-ink' : 'text-line'
+                    }`}
+                  >
+                    {reading.label ?? '?'}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-semibold">{reading.message}</p>
+                    {reading.probability !== null && <ConfidenceBar value={reading.probability} />}
+                    {loading.letters === 'failed' && (
+                      <p className="mt-1 text-sm text-muted">Using the simple backup rules (15 letters).</p>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <p className={`text-4xl font-bold ${reading.label ? 'text-ink' : 'text-line'}`}>
+                    {reading.label ?? '…'}
+                  </p>
+                  <p className="mt-1 font-semibold">{reading.message}</p>
+                  {guesses.length > 0 && (
+                    <ul className="mt-3 space-y-1.5" aria-label="Top guesses">
+                      {guesses.map((g) => (
+                        <li key={g.sign} className="flex items-center gap-3 text-sm">
+                          <span className="w-24 truncate">{g.sign}</span>
+                          <ConfidenceBar value={g.probability} compact />
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {tip && <p className="mt-2 text-sm font-semibold text-warn">{tip}</p>}
+                </div>
+              )}
+            </div>
+
+            <div className="flex-1 p-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="font-bold">Subtitles</h2>
+                <div className="flex flex-wrap gap-1.5">
+                  <ActionButton onClick={speak} disabled={!text}>
+                    Speak
+                  </ActionButton>
+                  <ActionButton onClick={copy} disabled={!text}>
+                    {copied ? 'Copied' : 'Copy'}
+                  </ActionButton>
+                  <ActionButton onClick={() => setSubtitle(deleteLastWord)} disabled={!text}>
+                    Delete word
+                  </ActionButton>
+                  <ActionButton onClick={() => setSubtitle('')} disabled={!text}>
+                    Clear
+                  </ActionButton>
+                </div>
+              </div>
+              <p
+                aria-live="polite"
+                className="mt-3 min-h-[5.5rem] break-words rounded-xl bg-page px-4 py-3 text-xl font-bold tracking-wide"
+              >
+                {subtitle || <span className="text-base font-normal tracking-normal text-muted">Your words appear here.</span>}
+              </p>
+            </div>
+
+            {recordMode && (
+              <div className="border-t border-line p-5 text-sm">
+                <h2 className="font-bold">Recording training data</h2>
+                <p className="mt-1 text-muted">
+                  {mode !== 'letters'
+                    ? 'Switch to Letters to record.'
+                    : recordingLetter
+                      ? `Recording ${recordingLetter}…`
+                      : `Hold a letter key to record that letter. Examples saved: ${recordedCount}`}
+                </p>
+                <ActionButton onClick={() => recorderRef.current.download()} className="mt-3">
+                  Download data (CSV)
+                </ActionButton>
+              </div>
+            )}
+          </section>
+        </div>
+
+        {mode === 'letters' ? (
+          <LetterGuide current={reading.label} />
+        ) : (
+          <SignGuide current={reading.label} />
+        )}
+
+        <HowItWorks />
+      </main>
+
+      <footer className="border-t border-line">
+        <p className="mx-auto max-w-6xl px-4 py-6 text-sm leading-relaxed text-muted sm:px-6">
+          A learning project, not an interpreter. Sign model: ASL Realtime Transformer by Ceyda Akin (CC BY 4.0).
+          Hand tracking: MediaPipe by Google. Letter drawings: Wikimedia Commons (public domain). Built by Nilam
+          Shinde.
         </p>
-      )}
-
-      {/* Video + dots + subtitles. aspect-video (16:9) matches the camera, so the dots line up. */}
-      <div className="relative w-full max-w-3xl aspect-video border-4 border-leaf rounded-2xl overflow-hidden bg-leaf shadow-[10px_10px_0_var(--tomato)]">
-        <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover -scale-x-100" />
-        <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none -scale-x-100" />
-
-        {signing && (
-          <span className="absolute top-3 left-3 flex items-center gap-2 bg-tomato text-cream px-3 py-1 rounded-full text-sm font-semibold">
-            <span className="w-2 h-2 rounded-full bg-cream animate-pulse" /> Watching sign
-          </span>
-        )}
-
-        <div className="absolute bottom-4 inset-x-4 text-center">
-          <span className="inline-block bg-cream/95 text-leaf px-5 py-2 rounded-lg font-display uppercase tracking-wide text-2xl sm:text-3xl min-h-[2.75rem] whitespace-pre-wrap">
-            {shown || <span className="font-sans normal-case tracking-normal text-lg text-leaf-soft">Subtitles appear here</span>}
-          </span>
-        </div>
-      </div>
-
-      {/* What the app sees right now */}
-      <div className="mt-8 px-8 py-4 bg-paper rounded-xl border-2 border-leaf text-center min-w-[18rem] max-w-3xl">
-        <h2 className="font-display uppercase tracking-wide text-3xl text-leaf">{live}</h2>
-        {tip && <p className="mt-1 text-sm text-tomato-dark">{tip}</p>}
-
-        {mode === 'signs' && guesses.length > 0 && (
-          <p className="mt-1 text-sm text-leaf-soft">
-            Top guesses: {guesses.map((g) => `${g.sign} ${Math.round(g.probability * 100)}%`).join(' · ')}
-          </p>
-        )}
-      </div>
-
-      <div className="flex gap-2 mt-4">
-        <button
-          onClick={() => setSubtitle(deleteLastWord)}
-          className="px-4 py-2 rounded-lg border-2 border-leaf font-semibold hover:bg-leaf hover:text-cream transition-colors"
-        >
-          Delete last word
-        </button>
-        <button
-          onClick={() => setSubtitle('')}
-          className="px-4 py-2 rounded-lg border-2 border-leaf font-semibold hover:bg-leaf hover:text-cream transition-colors"
-        >
-          Clear
-        </button>
-      </div>
-      {mode === 'letters' && (
-        <div className="mt-4 text-center text-sm">
-          <p>
-            {recordingLetter
-              ? `Recording ${recordingLetter}…`
-              : `Hold a letter key to record it. Examples saved: ${recordedCount}`}
-          </p>
-          <button
-            onClick={() => recorderRef.current.download()}
-            className="mt-2 px-4 py-2 rounded-lg border-2 border-leaf font-semibold hover:bg-leaf hover:text-cream transition-colors"
-          >
-            Download data (CSV)
-          </button>
-        </div>
-      )}
-
-      <p className="text-sm text-leaf-soft mt-5 max-w-xl text-center">
-        {mode === 'letters'
-          ? 'Hold each letter still for about half a second. Lower your hand for a second to add a space.'
-          : 'Raise your hand, do one sign, then lower your hand. The sign is recognised when your hand leaves the picture.'}
-      </p>
-      {mode === 'letters' && <LetterGuide current={currentLetter} />}
-
-      <p className="text-xs text-leaf-soft mt-8 text-center">
-        Sign model: ASL Realtime Transformer by Ceyda Akin (CC BY 4.0). Letter drawings: Wikimedia Commons (public
-        domain). A learning demo, not an interpreter.
-      </p>
+      </footer>
     </div>
   );
 }
 
-// ---------- letter guide (Letters mode) ----------
+// ---------- small pieces ----------
 
-function LetterGuide({ current }: { current: string | null }) {
-  const supported = ALPHABET.filter((l) => l.supported);
-  const others = ALPHABET.filter((l) => !l.supported);
+function HandMark() {
+  // Five fingertips joined to a wrist point: the same dots the app draws on your hand.
+  const tips: [number, number][] = [
+    [6, 12],
+    [10, 6],
+    [15, 4.5],
+    [20, 6],
+    [24, 10],
+  ];
   return (
-    <section className="w-full max-w-3xl mt-10" aria-labelledby="letter-guide-title">
-      <h2 id="letter-guide-title" className="stamp font-display uppercase text-4xl text-leaf text-center">
-        Letter guide
-      </h2>
-      <p className="text-sm text-leaf-soft text-center mt-1 mb-4">
-        The {supported.length} letters the app can read. The one it sees right now lights up.
-      </p>
-      <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
-        {supported.map((l) => (
-          <LetterCard key={l.letter} item={l} active={l.letter === current} />
-        ))}
-      </div>
-
-      <details className="mt-6">
-        <summary className="cursor-pointer text-center font-semibold text-leaf">
-          Other letters (the app can&apos;t read these yet)
-        </summary>
-        <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 mt-4 opacity-70">
-          {others.map((l) => (
-            <LetterCard key={l.letter} item={l} active={false} />
-          ))}
-        </div>
-      </details>
-    </section>
+    <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true" className="shrink-0">
+      <rect width="30" height="30" rx="9" className="fill-accent" />
+      {tips.map(([x, y]) => (
+        <line key={x} x1="15" y1="24" x2={x} y2={y} className="stroke-accent-ink" strokeOpacity="0.55" strokeWidth="1.4" />
+      ))}
+      {tips.map(([x, y]) => (
+        <circle key={x} cx={x} cy={y} r="2" className="fill-accent-ink" />
+      ))}
+      <circle cx="15" cy="24" r="2.4" className="fill-accent-ink" />
+    </svg>
   );
 }
 
-function LetterCard({ item, active }: { item: AlphabetLetter; active: boolean }) {
+function ModeButton({
+  active,
+  disabled,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
   return (
-    <figure
-      className={`rounded-xl border-2 p-3 text-center transition-colors ${
-        active ? 'border-tomato bg-tomato/10 ring-2 ring-tomato' : 'border-leaf bg-paper'
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-pressed={active}
+      className={`flex-1 rounded-full px-4 py-2 text-sm font-bold transition-colors disabled:opacity-45 ${
+        active ? 'bg-accent text-accent-ink' : 'text-muted hover:text-ink'
       }`}
     >
-      {/* Plain <img>: the drawings come straight from Wikimedia, no resizing needed. */}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={item.image} alt={`ASL letter ${item.letter}`} loading="lazy" className="h-20 w-full object-contain" />
-      <figcaption>
-        <span className={`block font-display text-3xl ${active ? 'text-tomato-dark' : 'text-leaf'}`}>{item.letter}</span>
-        <span className="block text-xs leading-snug text-leaf-soft mt-1">{item.how}</span>
-      </figcaption>
-    </figure>
+      {children}
+    </button>
+  );
+}
+
+function ActionButton({
+  onClick,
+  disabled,
+  className = '',
+  children,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`rounded-lg border border-line px-3 py-1.5 text-sm font-semibold transition-colors hover:bg-page disabled:opacity-40 disabled:hover:bg-transparent ${className}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ConfidenceBar({ value, compact = false }: { value: number; compact?: boolean }) {
+  const percent = Math.round(value * 100);
+  return (
+    <div className={`flex flex-1 items-center gap-3 ${compact ? '' : 'mt-2'}`}>
+      <div
+        role="meter"
+        aria-label="How sure the model is"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        className={`flex-1 overflow-hidden rounded-full bg-accent-soft ${compact ? 'h-1.5' : 'h-2'}`}
+      >
+        <div className="h-full rounded-full bg-accent transition-[width] duration-200" style={{ width: `${percent}%` }} />
+      </div>
+      <span className="w-11 text-right text-sm font-semibold tabular-nums">{percent}%</span>
+    </div>
+  );
+}
+
+function LoadingList({ loading }: { loading: Loading }) {
+  const items: [keyof Loading, string][] = [
+    ['camera', 'Camera'],
+    ['tracker', 'Hand tracking'],
+    ['letters', 'Letter model'],
+    ['signs', 'Sign model'],
+  ];
+  return (
+    <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted" aria-label="Loading progress">
+      {items.map(([key, label]) => (
+        <li key={key} className="flex items-center gap-1.5">
+          <StepIcon step={loading[key]} />
+          {label}
+          <span className="sr-only">: {loading[key]}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function StepIcon({ step }: { step: Step }) {
+  if (step === 'loading') {
+    return <span aria-hidden="true" className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-line border-t-accent" />;
+  }
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" className={step === 'ready' ? 'text-accent' : 'text-warn'}>
+      {step === 'ready' ? (
+        <path d="M3 7.5l2.5 2.5L11 4.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      ) : (
+        <path d="M4 4l6 6M10 4l-6 6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      )}
+    </svg>
   );
 }
 
@@ -445,17 +690,12 @@ function deleteLastWord(text: string) {
   return lastSpace < 0 ? '' : trimmed.slice(0, lastSpace + 1);
 }
 
-// ---------- drawing ----------
+// ---------- drawing the dots on the video ----------
 
 const HAND_LINKS = HolisticLandmarker.HAND_CONNECTIONS;
 const ARM_POINTS = [11, 12, 13, 14, 15, 16]; // shoulders, elbows, wrists
 
-function draw(
-  canvas: HTMLCanvasElement,
-  video: HTMLVideoElement,
-  hands: P3[][],
-  pose: P3[] | undefined
-) {
+function draw(canvas: HTMLCanvasElement, video: HTMLVideoElement, hands: P3[][], pose: P3[] | undefined) {
   // The canvas's own resolution must equal the camera's, or the dots end up in the wrong place.
   if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
     canvas.width = video.videoWidth;
@@ -467,21 +707,18 @@ function draw(
   ctx.clearRect(0, 0, w, h);
 
   if (pose) {
-    ctx.fillStyle = '#2f4a2b'; // leaf green
-    ctx.strokeStyle = '#f4efdb'; // cream outline so it shows on dark clothes
-    ctx.lineWidth = 2;
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
     for (const i of ARM_POINTS) {
       const p = pose[i];
       if (!p) continue;
       ctx.beginPath();
-      ctx.arc(p.x * w, p.y * h, 7, 0, 2 * Math.PI);
+      ctx.arc(p.x * w, p.y * h, 5, 0, 2 * Math.PI);
       ctx.fill();
-      ctx.stroke();
     }
   }
 
   for (const hand of hands) {
-    ctx.strokeStyle = 'rgba(244,239,219,0.85)'; // cream lines
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)';
     ctx.lineWidth = 3;
     for (const { start, end } of HAND_LINKS) {
       ctx.beginPath();
@@ -489,11 +726,14 @@ function draw(
       ctx.lineTo(hand[end].x * w, hand[end].y * h);
       ctx.stroke();
     }
-    ctx.fillStyle = '#c9372b'; // tomato dots
+    ctx.fillStyle = DOT_COLOR;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
     for (const p of hand) {
       ctx.beginPath();
-      ctx.arc(p.x * w, p.y * h, 5, 0, 2 * Math.PI);
+      ctx.arc(p.x * w, p.y * h, 6, 0, 2 * Math.PI);
       ctx.fill();
+      ctx.stroke();
     }
   }
 }
