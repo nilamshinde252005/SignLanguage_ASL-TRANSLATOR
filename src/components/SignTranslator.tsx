@@ -15,6 +15,8 @@ import { classifyLetter, LetterTyper, type P3 } from '../lib/asl/letters';
 import { loadLetterModel, type LetterGuess, type ReadLetter } from '../lib/asl/letterModel';
 import { SignSegmenter, hasHand, holisticFrame, isArmUp, toWindow } from '../lib/asl/preprocess';
 import { Recorder } from '../lib/asl/recorder';
+import { ClipRecorder } from '../lib/asl/clipRecorder';
+import { MotionSegmenter } from '../lib/asl/motion';
 import HowItWorks from './HowItWorks';
 import LetterGuide from './LetterGuide';
 import SignGuide from './SignGuide';
@@ -78,6 +80,10 @@ export default function SignTranslator() {
   const segmenterRef = useRef(new SignSegmenter());
   const typerRef = useRef(new LetterTyper());
   const recorderRef = useRef(new Recorder());
+  const motionRef = useRef(new MotionSegmenter()); // cuts the spelling hand's movement into moves
+  const clipRecorderRef = useRef(new ClipRecorder()); // records moves for training (with ?record)
+  const clipLabelRef = useRef<string | null>(null); // J, Z or other while that key is held
+  const moveLabelRef = useRef<string | null>(null); // the label held during the current move
   const modeRef = useRef<Mode>('letters');
   const lastReadingRef = useRef('');
 
@@ -98,6 +104,8 @@ export default function SignTranslator() {
   const [copied, setCopied] = useState(false);
   const [recordingLetter, setRecordingLetter] = useState<string | null>(null);
   const [recordedCount, setRecordedCount] = useState(0);
+  const [moving, setMoving] = useState(false);
+  const [clipCounts, setClipCounts] = useState<Record<string, number>>({});
 
   const setStep = useCallback((part: keyof Loading, step: Step) => setLoading((l) => ({ ...l, [part]: step })), []);
   const addText = useCallback((text: string) => setSubtitle((s) => s + text), []);
@@ -115,6 +123,7 @@ export default function SignTranslator() {
     modeRef.current = next;
     segmenterRef.current.reset();
     typerRef.current = new LetterTyper();
+    motionRef.current.reset();
     letterGuessRef.current = null;
     wasSigningRef.current = false;
     setGuesses([]);
@@ -230,6 +239,7 @@ export default function SignTranslator() {
       // Use the hand that is higher on screen (smaller y) as the spelling hand.
       const hand = [...hands].sort((a, b) => a[0].y - b[0].y)[0];
       recorderRef.current.add(hand);
+      recordMoves(hand);
 
       let letter: string | null = null;
       let probability: number | null = null;
@@ -265,6 +275,21 @@ export default function SignTranslator() {
       else if (active && !wasSigningRef.current) showReading(null, null, 'Watching your sign…');
       else if (!active && wasSigningRef.current) showReading(null, null, 'Raise your hand and make one sign');
       wasSigningRef.current = active;
+    }
+
+    /** Cuts the hand's movement into moves and, while J, Z or 0 is held, saves them for training. */
+    function recordMoves(hand: P3[] | undefined) {
+      const motion = motionRef.current;
+      const move = motion.push(hand);
+      if (motion.moving && clipLabelRef.current) moveLabelRef.current = clipLabelRef.current;
+      if (move) {
+        if (moveLabelRef.current) {
+          clipRecorderRef.current.add(moveLabelRef.current, move);
+          setClipCounts(clipRecorderRef.current.counts());
+        }
+        moveLabelRef.current = null;
+      }
+      setMoving(motion.moving);
     }
 
     async function askLetterModel(points: P3[]) {
@@ -332,8 +357,12 @@ export default function SignTranslator() {
         recorder.label = key;
         setRecordingLetter(key);
       }
+      // Moving letters: J and Z, and 0 for "other" moves (between letters, waving, and so on).
+      if (key === 'J' || key === 'Z') clipLabelRef.current = key;
+      if (key === '0') clipLabelRef.current = 'other';
     };
     const onKeyUp = () => {
+      clipLabelRef.current = null;
       recorder.label = null;
       setRecordingLetter(null);
       setRecordedCount(recorder.count);
@@ -531,6 +560,26 @@ export default function SignTranslator() {
                 <ActionButton onClick={() => recorderRef.current.download()} className="mt-3">
                   Download data (CSV)
                 </ActionButton>
+
+                {mode === 'letters' && (
+                  <>
+                    <h2 className="mt-5 border-t border-line pt-4 font-bold">Moving letters (J and Z)</h2>
+                    <p className="mt-1 text-muted">
+                      Hold J or Z while you draw that letter, then hold still for a moment. Hold 0 while you move between
+                      other letters, so the model learns what isn&apos;t J or Z.
+                    </p>
+                    <p className="mt-2 flex items-center gap-2 font-semibold">
+                      <span className={`h-2.5 w-2.5 rounded-full ${moving ? 'bg-accent' : 'bg-line'}`} />
+                      {moving ? 'Hand moving' : 'Hand still'}
+                    </p>
+                    <p className="mt-1 text-muted">
+                      Moves saved: J {clipCounts.J ?? 0}, Z {clipCounts.Z ?? 0}, other {clipCounts.other ?? 0}
+                    </p>
+                    <ActionButton onClick={() => clipRecorderRef.current.download()} className="mt-3">
+                      Download moves (JSON)
+                    </ActionButton>
+                  </>
+                )}
               </div>
             )}
           </section>
