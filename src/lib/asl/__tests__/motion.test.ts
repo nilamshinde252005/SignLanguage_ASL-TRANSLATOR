@@ -9,6 +9,9 @@ const hand = (x = 0.5, y = 0.5): P3[] =>
     i === 9 ? { x, y: y - 0.1, z: 0 } : { x: x + (i % 5) * 0.01, y: y - (i % 4) * 0.02, z: 0 }
   );
 
+// No smoothing, short pauses: easier to count frames in the tests.
+const options = { smooth: 1, stillFrames: 3, minFrames: 4, preRoll: 2 };
+
 describe('handSpeed', () => {
   it('is 0 for a still hand and grows with movement (in palm sizes)', () => {
     expect(handSpeed(hand(), hand())).toBe(0);
@@ -24,7 +27,7 @@ describe('MotionSegmenter', () => {
   });
 
   it('returns one move after the hand moves and then holds still', () => {
-    const seg = new MotionSegmenter(0.035, 0.015, 3, 4, 90, 2);
+    const seg = new MotionSegmenter(options);
     seg.push(hand(0.5));
     seg.push(hand(0.5));
     for (let i = 1; i <= 6; i++) expect(seg.push(hand(0.5 + i * 0.01))).toBeNull(); // moving
@@ -37,13 +40,33 @@ describe('MotionSegmenter', () => {
     expect(seg.moving).toBe(false);
   });
 
-  it('ends a move when the hand leaves the picture, and throws away tiny ones', () => {
-    const seg = new MotionSegmenter(0.035, 0.015, 3, 4);
+  it('throws away tiny jerks, and ends a move when the hand leaves the picture', () => {
+    const seg = new MotionSegmenter(options);
     seg.push(hand(0.5));
     seg.push(hand(0.52)); // one quick jerk
-    expect(seg.push(undefined)).toBeNull(); // too short to count
+    expect(seg.push(undefined)).toBeNull();
+    expect(seg.discarded).toBe('too short');
     for (let i = 0; i < 6; i++) seg.push(hand(0.5 + i * 0.02));
     expect(seg.push(undefined)?.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('throws away moves that go on too long (several letters, waving)', () => {
+    const seg = new MotionSegmenter({ ...options, maxFrames: 10 });
+    for (let i = 0; i < 20; i++) expect(seg.push(hand(0.3 + i * 0.01))).toBeNull(); // 20 moving frames
+    expect(seg.moving).toBe(true);
+    seg.push(hand(0.29)); // back to where it started, then hold still
+    seg.push(hand(0.29));
+    seg.push(hand(0.29));
+    expect(seg.push(hand(0.29))).toBeNull(); // third still frame: the move ends, but is thrown away
+    expect(seg.discarded).toBe('too long');
+    expect(seg.moving).toBe(false);
+  });
+
+  it('smooths the speed, so one repeated camera frame does not end a move', () => {
+    const seg = new MotionSegmenter({ smooth: 3, stillFrames: 2, minFrames: 4, preRoll: 0 });
+    const xs = [0.5, 0.5, 0.5, 0.52, 0.54, 0.54, 0.56, 0.58, 0.58, 0.6]; // every third frame repeats
+    for (const x of xs) expect(seg.push(hand(x))).toBeNull();
+    expect(seg.moving).toBe(true);
   });
 });
 

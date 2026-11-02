@@ -106,6 +106,7 @@ export default function SignTranslator() {
   const [recordedCount, setRecordedCount] = useState(0);
   const [moving, setMoving] = useState(false);
   const [clipCounts, setClipCounts] = useState<Record<string, number>>({});
+  const [lastMove, setLastMove] = useState('');
 
   const setStep = useCallback((part: keyof Loading, step: Step) => setLoading((l) => ({ ...l, [part]: step })), []);
   const addText = useCallback((text: string) => setSubtitle((s) => s + text), []);
@@ -282,10 +283,14 @@ export default function SignTranslator() {
       const motion = motionRef.current;
       const move = motion.push(hand);
       if (motion.moving && clipLabelRef.current) moveLabelRef.current = clipLabelRef.current;
-      if (move) {
-        if (moveLabelRef.current) {
-          clipRecorderRef.current.add(moveLabelRef.current, move);
+      const label = moveLabelRef.current;
+      if (move || motion.discarded) {
+        if (label && move) {
+          clipRecorderRef.current.add(label, move);
           setClipCounts(clipRecorderRef.current.counts());
+          setLastMove(`Saved: ${label === 'other' ? 'an other move' : label}`);
+        } else if (label && motion.discarded === 'too long') {
+          setLastMove('Not saved: that move was too long. Do one letter, then hold still.');
         }
         moveLabelRef.current = null;
       }
@@ -549,7 +554,7 @@ export default function SignTranslator() {
 
             {recordMode && (
               <div className="border-t border-line p-5 text-sm">
-                <h2 className="font-bold">Recording training data</h2>
+                <h2 className="font-bold">Recording still letters</h2>
                 <p className="mt-1 text-muted">
                   {mode !== 'letters'
                     ? 'Switch to Letters to record.'
@@ -558,15 +563,15 @@ export default function SignTranslator() {
                       : `Hold a letter key to record that letter. Examples saved: ${recordedCount}`}
                 </p>
                 <ActionButton onClick={() => recorderRef.current.download()} className="mt-3">
-                  Download data (CSV)
+                  Download still letters (CSV)
                 </ActionButton>
 
                 {mode === 'letters' && (
                   <>
                     <h2 className="mt-5 border-t border-line pt-4 font-bold">Moving letters (J and Z)</h2>
                     <p className="mt-1 text-muted">
-                      Hold J or Z while you draw that letter, then hold still for a moment. Hold 0 while you move between
-                      other letters, so the model learns what isn&apos;t J or Z.
+                      Hold J or Z, draw that letter once, then hold still until the dot turns grey. One letter per key
+                      press. Hold 0 while you move between other letters, so the model learns what isn&apos;t J or Z.
                     </p>
                     <p className="mt-2 flex items-center gap-2 font-semibold">
                       <span className={`h-2.5 w-2.5 rounded-full ${moving ? 'bg-accent' : 'bg-line'}`} />
@@ -575,8 +580,9 @@ export default function SignTranslator() {
                     <p className="mt-1 text-muted">
                       Moves saved: J {clipCounts.J ?? 0}, Z {clipCounts.Z ?? 0}, other {clipCounts.other ?? 0}
                     </p>
+                    {lastMove && <p className="mt-1 font-semibold">{lastMove}</p>}
                     <ActionButton onClick={() => clipRecorderRef.current.download()} className="mt-3">
-                      Download moves (JSON)
+                      Download moving letters (JSON)
                     </ActionButton>
                   </>
                 )}

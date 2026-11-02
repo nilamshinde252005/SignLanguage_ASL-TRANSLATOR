@@ -15,71 +15,108 @@ export function handSpeed(previous: P3[], current: P3[]): number {
   return total / TRACKED.length / palm;
 }
 
+export interface MotionOptions {
+  start: number; // a move starts when the (smoothed) speed goes above this, in palm sizes per frame
+  stop: number; // ...and ends once the speed has stayed below this
+  stillFrames: number; // ...for this many frames in a row
+  minFrames: number; // shorter moves are just jitter
+  maxFrames: number; // longer moves are several letters or waving, not one letter
+  preRoll: number; // frames kept from just before the move started
+  smooth: number; // average the speed over this many frames (the camera sometimes repeats a frame)
+}
+
+const DEFAULTS: MotionOptions = {
+  start: 0.03,
+  stop: 0.02,
+  stillFrames: 5,
+  minFrames: 8,
+  maxFrames: 75,
+  preRoll: 3,
+  smooth: 3,
+};
+
 /**
- * Cuts a stream of hand frames into moves.
- * A move starts when the hand moves faster than `start` (palm sizes per frame) and ends
- * once it has been slower than `stop` for `stillFrames` frames in a row, or when the hand
- * leaves the picture. Moves shorter than `minFrames` are just jitter and are thrown away.
- *
- * push() returns the frames of a finished move, otherwise null.
+ * Cuts a stream of hand frames into moves: speed up → move starts; still again → move ends.
+ * push() returns the frames of a finished move, otherwise null. When a move is thrown away,
+ * `discarded` says why for that one frame ('too short' or 'too long').
  */
 export class MotionSegmenter {
+  discarded: 'too short' | 'too long' | null = null;
+  private options: MotionOptions;
   private frames: P3[][] = [];
   private before: P3[][] = []; // the last few frames before a move starts
+  private speeds: number[] = [];
   private previous: P3[] | null = null;
   private still = 0;
+  private tooLong = false; // the current move went past maxFrames; wait for stillness, then drop it
 
-  constructor(
-    private start = 0.035,
-    private stop = 0.015,
-    private stillFrames = 6,
-    private minFrames = 8,
-    private maxFrames = 90,
-    private preRoll = 3
-  ) {}
+  constructor(options: Partial<MotionOptions> = {}) {
+    this.options = { ...DEFAULTS, ...options };
+  }
 
-  /** True while a move is being collected. */
+  /** True while a move is happening. */
   get moving() {
-    return this.frames.length > 0;
+    return this.frames.length > 0 || this.tooLong;
   }
 
   reset() {
     this.frames = [];
     this.before = [];
+    this.speeds = [];
     this.previous = null;
     this.still = 0;
+    this.tooLong = false;
+    this.discarded = null;
   }
 
   push(hand: P3[] | undefined): P3[][] | null {
+    this.discarded = null;
     if (!hand) {
       const move = this.finish();
       this.previous = null;
+      this.speeds = [];
       return move;
     }
-    const speed = this.previous ? handSpeed(this.previous, hand) : 0;
+
+    const { start, stop, stillFrames, maxFrames, preRoll, smooth } = this.options;
+    this.speeds = [...this.speeds, this.previous ? handSpeed(this.previous, hand) : 0].slice(-smooth);
+    const speed = this.speeds.reduce((a, b) => a + b, 0) / this.speeds.length;
     this.previous = hand;
 
     if (!this.moving) {
-      if (speed > this.start) {
+      if (speed > start) {
         this.frames = [...this.before, hand];
         this.still = 0;
       } else {
-        this.before = [...this.before, hand].slice(-this.preRoll);
+        this.before = [...this.before, hand].slice(-preRoll);
       }
       return null;
     }
 
-    this.frames.push(hand);
-    this.still = speed < this.stop ? this.still + 1 : 0;
-    if (this.still >= this.stillFrames || this.frames.length >= this.maxFrames) return this.finish();
-    return null;
+    if (!this.tooLong) this.frames.push(hand);
+    if (this.frames.length > maxFrames) {
+      this.tooLong = true;
+      this.frames = [];
+    }
+    this.still = speed < stop ? this.still + 1 : 0;
+    return this.still >= stillFrames ? this.finish() : null;
   }
 
   private finish(): P3[][] | null {
     const move = this.frames;
+    const tooLong = this.tooLong;
     this.frames = [];
     this.before = [];
     this.still = 0;
-    return move.length >= this.minFrames ? move : null;
+    this.tooLong = false;
+    if (tooLong) {
+      this.discarded = 'too long';
+      return null;
+    }
+    if (move.length < this.options.minFrames) {
+      if (move.length) this.discarded = 'too short';
+      return null;
+    }
+    return move;
   }
 }
