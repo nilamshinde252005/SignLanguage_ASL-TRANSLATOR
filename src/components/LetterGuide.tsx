@@ -3,7 +3,6 @@ import { ALPHABET, type AlphabetLetter } from '../lib/asl/alphabet';
 /** Picture guide for Letters mode. The letter the app sees right now is highlighted. */
 export default function LetterGuide({ current }: { current: string | null }) {
   const supported = ALPHABET.filter((l) => l.supported);
-  const moving = ALPHABET.filter((l) => !l.supported);
 
   return (
     <section aria-labelledby="letter-guide" className="mt-14">
@@ -21,8 +20,7 @@ export default function LetterGuide({ current }: { current: string | null }) {
       </ul>
 
       <p className="mt-4 max-w-2xl text-sm text-muted">
-        {moving.map((l) => l.letter).join(' and ')}
-        {' are drawn in the air, so they need a model that watches movement. They aren’t supported yet.'}
+        J and Z are drawn in the air, so a second model watches the movement: draw the letter, then hold still.
       </p>
     </section>
   );

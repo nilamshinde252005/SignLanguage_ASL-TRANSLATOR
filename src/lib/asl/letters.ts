@@ -80,11 +80,22 @@ export class LetterTyper {
   private typed = false;
   private noHand = 0;
   private spaceTyped = true;
+  private muted = 0;
 
   constructor(private hold = 12, private spaceAfter = 30) {}
 
+  /**
+   * Types nothing for the next `frames` frames, and a letter that gets held through them counts as
+   * already typed. Used after a J or Z, so the hand shape at the end of the move isn't typed too.
+   */
+  mute(frames: number) {
+    this.muted = frames;
+  }
+
   /** Returns text to add ("A", " ") or null. */
   push(letter: string | null, handVisible: boolean): string | null {
+    const muted = this.muted > 0;
+    if (muted) this.muted--;
     if (!handVisible) {
       this.candidate = null;
       this.count = 0;
@@ -105,6 +116,7 @@ export class LetterTyper {
     this.count++;
     if (letter && !this.typed && this.count >= this.hold) {
       this.typed = true; // don't repeat until the letter changes
+      if (muted) return null;
       this.spaceTyped = false;
       return letter;
     }

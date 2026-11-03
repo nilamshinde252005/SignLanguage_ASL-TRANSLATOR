@@ -38,6 +38,7 @@ describe('MotionSegmenter', () => {
     seg.push(hand(0.5));
     for (let i = 1; i <= 6; i++) expect(seg.push(hand(0.5 + i * 0.01))).toBeNull(); // moving
     expect(seg.moving).toBe(true);
+    expect(seg.travelled).toBeCloseTo(0.6); // 0.5 → 0.56 so far, with a palm of 0.1
     expect(seg.push(hand(0.56))).toBeNull();
     expect(seg.push(hand(0.56))).toBeNull();
     const move = seg.push(hand(0.56)); // third still frame ends the move

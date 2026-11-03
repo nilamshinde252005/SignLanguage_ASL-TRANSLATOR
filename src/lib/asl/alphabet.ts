@@ -25,7 +25,7 @@ export const ALPHABET: AlphabetLetter[] = [
   { letter: 'G', supported: true, how: 'Index finger and thumb point sideways, parallel, with a small gap.', image: `${IMG}/d/d9/Sign_language_G.svg` },
   { letter: 'H', supported: true, how: 'Index and middle fingers together, pointing sideways.', image: `${IMG}/9/97/Sign_language_H.svg` },
   { letter: 'I', supported: true, how: 'Little finger up, the rest in a fist with the thumb across.', image: `${IMG}/1/10/Sign_language_I.svg` },
-  { letter: 'J', supported: false, how: 'Make an I, then draw a J in the air with the little finger (moves).', image: `${IMG}/b/b1/Sign_language_J.svg` },
+  { letter: 'J', supported: true, how: 'Make an I, then draw a J in the air with the little finger (moves).', image: `${IMG}/b/b1/Sign_language_J.svg` },
   { letter: 'K', supported: true, how: 'Index and middle fingers up in a V, thumb touching the middle finger.', image: `${IMG}/9/97/Sign_language_K.svg` },
   { letter: 'L', supported: true, how: 'Index finger up and thumb out to the side: an L shape.', image: `${IMG}/d/d2/Sign_language_L.svg` },
   { letter: 'M', supported: true, how: 'Thumb tucked under the first three fingers.', image: `${IMG}/c/c4/Sign_language_M.svg` },
@@ -41,5 +41,5 @@ export const ALPHABET: AlphabetLetter[] = [
   { letter: 'W', supported: true, how: 'Index, middle and ring fingers up and spread.', image: `${IMG}/8/83/Sign_language_W.svg` },
   { letter: 'X', supported: true, how: 'Index finger bent like a hook.', image: `${IMG}/b/b7/Sign_language_X.svg` },
   { letter: 'Y', supported: true, how: 'Thumb and little finger out, the others folded (hang loose).', image: `${IMG}/1/1d/Sign_language_Y.svg` },
-  { letter: 'Z', supported: false, how: 'Draw a Z in the air with the index finger (moves).', image: `${IMG}/0/0a/Sign_language_Z.svg` },
+  { letter: 'Z', supported: true, how: 'Draw a Z in the air with the index finger (moves).', image: `${IMG}/0/0a/Sign_language_Z.svg` },
 ];

@@ -12,7 +12,7 @@ const atkinson = Atkinson_Hyperlegible_Next({
 export const metadata: Metadata = {
   title: "ASL Translator",
   description:
-    "Fingerspell 24 letters or sign 250 everyday words in front of your webcam and read them as subtitles. Runs entirely in your browser.",
+    "Fingerspell all 26 letters or sign 250 everyday words in front of your webcam and read them as subtitles. Runs entirely in your browser.",
 };
 
 export const viewport: Viewport = {

@@ -89,6 +89,11 @@ export class MotionSegmenter {
     return this.frames.length > 0 || this.tooLong;
   }
 
+  /** How big the current move is so far, in palm sizes (0 when the hand isn't moving). */
+  get travelled() {
+    return this.frames.length ? moveSize(this.frames) : 0;
+  }
+
   reset() {
     this.frames = [];
     this.before = [];

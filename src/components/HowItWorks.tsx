@@ -12,7 +12,7 @@ const STEPS = [
   },
   {
     title: 'Read it',
-    body: 'For letters, a small neural network I trained on 3,600 recorded hand shapes picks one of 24 letters. On a recording session it never studied, it gets 93% right. For signs, the whole movement goes to an open-source model that knows 250 words.',
+    body: 'For letters, a small neural network I trained on 3,600 recorded hand shapes picks one of 24 letters. On a recording session it never studied, it gets 93% right. J and Z are drawn in the air, so a second model I trained reads the whole move. For signs, the whole movement goes to an open-source model that knows 250 words.',
   },
 ];
 

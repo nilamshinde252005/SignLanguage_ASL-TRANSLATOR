@@ -2,7 +2,8 @@
 
 /**
  * ASL Translator: webcam → MediaPipe hand and body points → subtitles.
- *  - Letters mode: 24 fingerspelled letters, read by my own trained model (the old rules are a backup).
+ *  - Letters mode: all 26 fingerspelled letters, read by my own two trained models: one for still hand
+ *                  shapes (24 letters; the old rules are a backup) and one for moves (J and Z).
  *  - Signs mode:   250 everyday signs, read by "ASL Realtime Transformer" by Ceyda Akin (CC BY 4.0),
  *                  preprocessing ported from github.com/ceydaakin/asl-realtime (MIT).
  */
@@ -15,7 +16,15 @@ import { classifyLetter, LetterTyper, type P3 } from '../lib/asl/letters';
 import { loadLetterModel, type LetterGuess, type ReadLetter } from '../lib/asl/letterModel';
 import { SignSegmenter, hasHand, holisticFrame, isArmUp, toWindow } from '../lib/asl/preprocess';
 import { Recorder } from '../lib/asl/recorder';
+import { clipFrame, SignClipRecorder } from '../lib/asl/signClips';
 import { MotionSegmenter } from '../lib/asl/motion';
+import {
+  addMovingLetter,
+  loadMoveModel,
+  MIN_MOVE_CONFIDENCE,
+  type ReadMove,
+  type TypedLetter,
+} from '../lib/asl/moveModel';
 import HowItWorks from './HowItWorks';
 import LetterGuide from './LetterGuide';
 import SignGuide from './SignGuide';
@@ -29,6 +38,9 @@ const HOLISTIC_MODEL =
 const MIN_LETTER_CONFIDENCE = 0.7; // only use the letter model's answer if it is at least 70% sure
 const MIN_SIGN_CONFIDENCE = 0.4; // only add a sign to the subtitles if the sign model is at least 40% sure
 const MIN_HAND_FRAMES = 10; // fewer than this (~1/3 s) usually means the sign was rushed
+const DRAWING_SIZE = 0.6; // a move this big (in palm sizes) is drawing, not holding a shape: don't type still letters
+const MUTE_AFTER_MOVE = 15; // frames: don't type the hand shape that a J or Z ends on
+const SHOW_MOVING_LETTER_MS = 1200; // keep a typed J or Z on screen this long
 const CAPTION_CHARS = 60; // how much of the subtitles to show on top of the video
 const GITHUB_URL = 'https://github.com/nilamshinde252005/SignLanguage_ASL-TRANSLATOR';
 const DOT_COLOR = '#4b63ff'; // the accent blue, bright enough to show on any video
@@ -52,7 +64,8 @@ interface Reading {
 }
 
 const HINTS: Record<Mode, string> = {
-  letters: 'Hold each letter still for half a second to type it. Lower your hand for a second to add a space.',
+  letters:
+    'Hold each letter still for half a second to type it. Draw J and Z in the air, then hold still. Lower your hand for a second to add a space.',
   signs: 'Raise your hand, make one sign, then lower your hand. The word appears when your hand leaves the picture.',
 };
 
@@ -80,9 +93,16 @@ export default function SignTranslator() {
   const typerRef = useRef(new LetterTyper());
   const recorderRef = useRef(new Recorder());
   const motionRef = useRef(new MotionSegmenter()); // cuts the spelling hand's movement into moves
+  const readMoveRef = useRef<ReadMove | null>(null); // my moving-letters model (null = not loaded)
+  const moveStartedAtRef = useRef(0); // when the current move started (performance.now())
+  const lastStillRef = useRef<TypedLetter | null>(null); // the last still letter typed, and when
+  const showMovingUntilRef = useRef(0); // keep showing a typed J or Z until this time
   const clipLabelRef = useRef<string | null>(null); // J, Z or other while that key is held
   const moveLabelRef = useRef<string | null>(null); // the label held during the current move
   const clipCountsRef = useRef<Record<string, number>>({}); // good moves recorded per label
+  const signClipRef = useRef<Float32Array[]>([]); // both hands + body for the sign being made right now
+  const signRecorderRef = useRef(new SignClipRecorder()); // records my own signs for training (with ?record)
+  const signLabelRef = useRef<string | null>(null); // the word being recorded (null = not recording)
   const modeRef = useRef<Mode>('letters');
   const lastReadingRef = useRef('');
 
@@ -106,6 +126,10 @@ export default function SignTranslator() {
   const [moving, setMoving] = useState(false);
   const [clipCounts, setClipCounts] = useState<Record<string, number>>({});
   const [lastMove, setLastMove] = useState<{ saved: boolean; text: string } | null>(null);
+  const [signWord, setSignWord] = useState('NAME');
+  const [signLabel, setSignLabel] = useState<string | null>(null);
+  const [signCounts, setSignCounts] = useState<Record<string, number>>({});
+  const [lastSign, setLastSign] = useState('');
 
   const setStep = useCallback((part: keyof Loading, step: Step) => setLoading((l) => ({ ...l, [part]: step })), []);
   const addText = useCallback((text: string) => setSubtitle((s) => s + text), []);
@@ -119,11 +143,20 @@ export default function SignTranslator() {
     }
   }, []);
 
+  /** Starts (or with null, stops) recording signs under a label. */
+  const recordSign = (label: string | null) => {
+    signLabelRef.current = label;
+    setSignLabel(label);
+    setLastSign('');
+  };
+
   const switchMode = (next: Mode) => {
     modeRef.current = next;
     segmenterRef.current.reset();
+    signClipRef.current = [];
     typerRef.current = new LetterTyper();
     motionRef.current.reset();
+    lastStillRef.current = null;
     letterGuessRef.current = null;
     wasSigningRef.current = false;
     setGuesses([]);
@@ -170,6 +203,16 @@ export default function SignTranslator() {
       } catch (err) {
         console.error('Letter model failed to load, using the old rules instead:', err);
         if (!cancelled) setStep('letters', 'failed');
+      }
+    }
+
+    // ---- 2b. My moving-letters model for J and Z (optional: the other letters work without it) ----
+    async function loadMoves() {
+      try {
+        const readMove = await loadMoveModel();
+        if (!cancelled) readMoveRef.current = readMove;
+      } catch (err) {
+        console.error('Moving-letters model failed to load, so J and Z are off:', err);
       }
     }
 
@@ -238,8 +281,16 @@ export default function SignTranslator() {
     function readLetterFrame(hands: P3[][]) {
       // Use the hand that is higher on screen (smaller y) as the spelling hand.
       const hand = [...hands].sort((a, b) => a[0].y - b[0].y)[0];
+      const now = performance.now();
       recorderRef.current.add(hand);
-      recordMoves(hand);
+
+      // Moving letters: when a move ends, ask the moves model whether it was a J or a Z.
+      const motion = motionRef.current;
+      const wasMoving = motion.moving;
+      const move = followMoves(hand);
+      if (!wasMoving && motion.moving) moveStartedAtRef.current = now;
+      if (move) void askMoveModel(move, moveStartedAtRef.current);
+      const drawing = motion.moving && motion.travelled >= DRAWING_SIZE;
 
       let letter: string | null = null;
       let probability: number | null = null;
@@ -256,33 +307,49 @@ export default function SignTranslator() {
         letterGuessRef.current = null; // no hand, so forget the old answer
       }
 
-      showReading(
-        letter,
-        probability,
-        !hand ? 'Show one hand to the camera' : letter ? 'Hold it still to type it' : 'Make a letter shape and hold it still'
-      );
-      const typed = typerRef.current.push(letter, !!hand);
-      if (typed) addText(typed);
+      if (now >= showMovingUntilRef.current) {
+        if (drawing) showReading(null, null, 'Watching your move…');
+        else
+          showReading(
+            letter,
+            probability,
+            !hand ? 'Show one hand to the camera' : letter ? 'Hold it still to type it' : 'Make a letter shape and hold it still'
+          );
+      }
+      const typed = typerRef.current.push(drawing ? null : letter, !!hand); // no still letters while drawing
+      if (typed) {
+        if (typed.trim()) lastStillRef.current = { letter: typed, at: now };
+        addText(typed);
+      }
     }
 
     function readSignFrame(result: HolisticLandmarkerResult) {
       const segmenter = segmenterRef.current;
+      const frame = holisticFrame(result);
+      const wasActive = segmenter.active;
       // isArmUp keeps the sign open if the hand is briefly lost in front of the face.
-      const frames = segmenter.push(holisticFrame(result), isArmUp(result.poseLandmarks?.[0]));
+      const frames = segmenter.push(frame, isArmUp(result.poseLandmarks?.[0]));
+      // Keep both hands and the body for the same frames the segmenter keeps (for my own sign model).
+      if (wasActive || hasHand(frame)) signClipRef.current.push(clipFrame(result));
+      const clip = signClipRef.current;
+      if (frames || !segmenter.active) signClipRef.current = [];
       const active = segmenter.active;
       setSigning(active);
-      if (frames) recognise(frames);
+      if (frames) {
+        saveSignClip(clip);
+        recognise(frames);
+      }
       else if (active && !wasSigningRef.current) showReading(null, null, 'Watching your sign…');
       else if (!active && wasSigningRef.current) showReading(null, null, 'Raise your hand and make one sign');
       wasSigningRef.current = active;
     }
 
     /**
-     * Cuts the hand's movement into moves. While J, Z or 0 is held, says whether each move
-     * was a good one. (The frames themselves go into the CSV; the training notebook cuts
-     * them into moves with the same rules.)
+     * Cuts the hand's movement into moves and returns a move when one ends. While recording
+     * (J, Z or space held), also says whether each move was a good one. (The frames themselves
+     * go into the CSV; the training notebook cuts them into moves with the same rules.)
      */
-    function recordMoves(hand: P3[] | undefined) {
+    function followMoves(hand: P3[] | undefined): P3[][] | null {
       const motion = motionRef.current;
       const move = motion.push(hand);
       if (motion.moving && clipLabelRef.current) moveLabelRef.current = clipLabelRef.current;
@@ -304,6 +371,26 @@ export default function SignTranslator() {
         moveLabelRef.current = null;
       }
       setMoving(motion.moving);
+      return move;
+    }
+
+    /** Reads a finished move. If it's a J or Z, types it (in place of the I typed just before a J). */
+    async function askMoveModel(move: P3[][], startedAt: number) {
+      const readMove = readMoveRef.current;
+      if (!readMove) return;
+      try {
+        const guess = await readMove(move);
+        if (cancelled || modeRef.current !== 'letters') return;
+        if (guess.label === 'other' || guess.probability < MIN_MOVE_CONFIDENCE) return;
+        const lastStill = lastStillRef.current;
+        setSubtitle((text) => addMovingLetter(text, guess.label, lastStill, startedAt));
+        lastStillRef.current = null;
+        typerRef.current.mute(MUTE_AFTER_MOVE);
+        showMovingUntilRef.current = performance.now() + SHOW_MOVING_LETTER_MS;
+        showReading(guess.label, guess.probability, 'Added to the subtitles');
+      } catch (err) {
+        console.error('Moving-letters model failed:', err);
+      }
     }
 
     async function askLetterModel(points: P3[]) {
@@ -317,6 +404,15 @@ export default function SignTranslator() {
       } finally {
         letterBusyRef.current = false;
       }
+    }
+
+    /** While recording (with ?record), saves the finished sign under the word being recorded. */
+    function saveSignClip(clip: Float32Array[]) {
+      const label = signLabelRef.current;
+      if (!label) return;
+      const count = signRecorderRef.current.add(label, clip);
+      setSignCounts(signRecorderRef.current.counts());
+      setLastSign(`Saved ${label === 'other' ? 'other sign' : label} · ${count} so far`);
     }
 
     async function recognise(frames: Float32Array[]) {
@@ -348,6 +444,7 @@ export default function SignTranslator() {
 
     void loadTracker();
     void loadLetters();
+    void loadMoves();
     void loadSigns();
     void startCamera();
 
@@ -432,7 +529,7 @@ export default function SignTranslator() {
             Sign to your camera. Read it as subtitles.
           </h1>
           <p className="mt-3 text-lg text-muted">
-            Fingerspell 24 letters or sign 250 everyday words. It all runs in your browser, so your video never
+            Fingerspell all 26 letters or sign 250 everyday words. It all runs in your browser, so your video never
             leaves your device.
           </p>
         </div>
@@ -475,7 +572,20 @@ export default function SignTranslator() {
                 </div>
               )}
 
-              {signing && (
+              {recordMode && mode === 'signs' && (
+                <div className="absolute inset-x-3 top-3 flex flex-wrap items-start justify-between gap-2 text-sm font-bold sm:text-base">
+                  <span
+                    className={`flex items-center gap-2 rounded-full px-3 py-1 ${signLabel ? 'bg-accent text-accent-ink' : 'bg-black/75 text-white'}`}
+                  >
+                    <span className={`h-2.5 w-2.5 rounded-full ${signing ? 'animate-pulse bg-current' : 'bg-white/40'}`} />
+                    {signLabel ? `Recording ${signLabel === 'other' ? 'other signs' : signLabel}` : 'Not recording'}
+                    {signing ? ' · watching' : ''}
+                  </span>
+                  {lastSign && <span className="rounded-xl bg-[#15803d] px-3 py-1 text-white">✓ {lastSign}</span>}
+                </div>
+              )}
+
+              {signing && !recordMode && (
                 <span className="absolute left-3 top-3 flex items-center gap-2 rounded-full bg-accent px-3 py-1 text-sm font-semibold text-accent-ink">
                   <span className="h-2 w-2 animate-pulse rounded-full bg-current" /> Watching your sign
                 </span>
@@ -585,7 +695,49 @@ export default function SignTranslator() {
             {recordMode && (
               <div className="border-t border-line p-5 text-sm">
                 {mode !== 'letters' ? (
-                  <p className="text-muted">Switch to Letters to record training data.</p>
+                  <>
+                    <h2 className="font-bold">Recording your own signs</h2>
+                    <ul className="mt-1 list-disc space-y-1 pl-5 text-muted">
+                      <li>
+                        Click Record {signWord || 'a word'}. Then raise your hands, sign it, and lower your hands out of the
+                        picture. Repeat.
+                      </li>
+                      <li>Click Record other signs and do lots of different signs the same way (HELLO, MY, MOM…).</li>
+                      <li>Each sign is saved when your hands leave the picture.</li>
+                    </ul>
+                    <label className="mt-3 flex items-center gap-2 font-semibold">
+                      Word
+                      <input
+                        value={signWord}
+                        onChange={(e) => setSignWord(e.target.value.toUpperCase().replace(/[^A-Z]/g, ''))}
+                        className="w-32 rounded-md border border-line bg-surface px-2 py-1 font-bold"
+                      />
+                    </label>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={!signWord}
+                        onClick={() => recordSign(signWord)}
+                        className="rounded-lg bg-accent px-3 py-1.5 text-sm font-bold text-accent-ink disabled:opacity-40"
+                      >
+                        Record {signWord || '…'}
+                      </button>
+                      <ActionButton onClick={() => recordSign('other')}>Record other signs</ActionButton>
+                      <ActionButton onClick={() => recordSign(null)} disabled={!signLabel}>
+                        Stop
+                      </ActionButton>
+                    </div>
+                    <p className="mt-3 text-muted">
+                      Signs saved:{' '}
+                      {Object.entries(signCounts)
+                        .map(([label, count]) => `${label} ${count}`)
+                        .join(', ') || 'none yet'}
+                      .
+                    </p>
+                    <ActionButton onClick={() => signRecorderRef.current.download()} className="mt-3">
+                      Download signs (CSV)
+                    </ActionButton>
+                  </>
                 ) : (
                   <>
                     <h2 className="font-bold">Recording training data</h2>
