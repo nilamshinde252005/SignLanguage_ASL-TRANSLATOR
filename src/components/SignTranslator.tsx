@@ -460,8 +460,11 @@ export default function SignTranslator() {
             // In ASL the name itself is fingerspelled right after NAME: switch to Letters for it (and back after).
             switchMode('letters');
             spellingNameRef.current = true;
-            showMovingUntilRef.current = performance.now() + 2500;
-            showReading(null, null, 'Now fingerspell the name, then lower your hand');
+            // Wait longer than usual (60 frames, about 2 seconds) before the name counts as finished,
+            // so a short pause between letters doesn't send you back to Signs halfway through.
+            typerRef.current = new LetterTyper(12, 60);
+            showMovingUntilRef.current = performance.now() + 3000;
+            showReading(null, null, 'Now fingerspell the name. Keep your hand up between letters.');
           }
         } else {
           showReading(null, null, 'Not sure. Try that sign again');
