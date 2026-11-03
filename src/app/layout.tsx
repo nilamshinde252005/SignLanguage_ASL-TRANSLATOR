@@ -1,27 +1,25 @@
-import type { Metadata } from "next";
-import { Anton, Geist, Geist_Mono } from "next/font/google";
+import type { Metadata, Viewport } from "next";
+import { Atkinson_Hyperlegible_Next } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+// Atkinson Hyperlegible was designed by the Braille Institute to be easy to read for people with low vision.
+const atkinson = Atkinson_Hyperlegible_Next({
+  variable: "--font-atkinson",
   subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
-// Bold condensed poster lettering for headings.
-const anton = Anton({
-  weight: "400",
-  variable: "--font-anton",
-  subsets: ["latin"],
+  adjustFontFallback: false, // Next.js has no size data for this newer font, so skip the fallback tuning (silences a warning)
 });
 
 export const metadata: Metadata = {
   title: "ASL Translator",
-  description: "Real-time ASL Translator",
+  description:
+    "Fingerspell all 26 letters or sign 250 everyday words in front of your webcam and read them as subtitles. Runs entirely in your browser.",
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f3f5f8" },
+    { media: "(prefers-color-scheme: dark)", color: "#0f1218" },
+  ],
 };
 
 export default function RootLayout({
@@ -30,11 +28,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} ${anton.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col">{children}</body>
+    <html lang="en" className={`${atkinson.variable} h-full antialiased`}>
+      <body className="min-h-full">{children}</body>
     </html>
   );
 }

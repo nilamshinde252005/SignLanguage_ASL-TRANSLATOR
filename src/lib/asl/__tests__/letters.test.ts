@@ -65,6 +65,15 @@ describe('LetterTyper', () => {
     expect(typer.push('A', true)).toBeNull(); // no repeats while held
   });
 
+  it('after mute(), skips the letter being held, then types the next one', () => {
+    const typer = new LetterTyper(3, 5);
+    typer.mute(5);
+    for (let i = 0; i < 8; i++) expect(typer.push('I', true)).toBeNull(); // held through the mute: never typed
+    expect(typer.push('A', true)).toBeNull();
+    expect(typer.push('A', true)).toBeNull();
+    expect(typer.push('A', true)).toBe('A'); // a new letter after the mute is typed as normal
+  });
+
   it('types a space after the hand has been gone for `spaceAfter` frames', () => {
     const typer = new LetterTyper(1, 3);
     expect(typer.push('L', true)).toBe('L');

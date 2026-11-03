@@ -1,39 +1,64 @@
 @import "tailwindcss";
 
-/* Tomato poster palette: cream paper, tomato red, leaf green. */
+/*
+ * Clean product look: cool white page, white panel, one cobalt accent.
+ * Dark mode follows the visitor's system setting.
+ */
 :root {
-  --cream: #f4efdb;
-  --paper: #fbf8ec;
-  --tomato: #c9372b;
-  --tomato-dark: #a32c22;
-  --leaf: #2f4a2b;
-  --leaf-soft: #56704b;
-  --background: var(--cream);
-  --foreground: var(--leaf);
+  --page: #f3f5f8;
+  --surface: #ffffff;
+  --ink: #12151c;
+  --muted: #586070;
+  --line: #e1e5eb;
+  --accent: #2d4be0;
+  --accent-soft: #e7ebfd;
+  --accent-ink: #ffffff;
+  --warn: #a8510a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #0f1218;
+    --surface: #171b23;
+    --ink: #e8ebf0;
+    --muted: #9aa3b2;
+    --line: #262c37;
+    --accent: #8796ff;
+    --accent-soft: #1f2650;
+    --accent-ink: #0f1218;
+    --warn: #f0a35e;
+  }
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-cream: var(--cream);
-  --color-paper: var(--paper);
-  --color-tomato: var(--tomato);
-  --color-tomato-dark: var(--tomato-dark);
-  --color-leaf: var(--leaf);
-  --color-leaf-soft: var(--leaf-soft);
-  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
-  --font-display: var(--font-anton), Impact, 'Arial Narrow', sans-serif;
+  --color-page: var(--page);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-ink);
+  --color-warn: var(--warn);
+  --font-sans: var(--font-atkinson), ui-sans-serif, system-ui, sans-serif;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--font-sans);
 }
 
-/* Worn letterpress look, like the ink on the poster: speckles of the paper show through. */
-.stamp {
-  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.5' numOctaves='3' seed='4'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -4.5 0 0 0 3.55'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
-  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.5' numOctaves='3' seed='4'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -4.5 0 0 0 3.55'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
 }
