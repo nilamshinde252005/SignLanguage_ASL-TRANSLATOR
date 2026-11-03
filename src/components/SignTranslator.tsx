@@ -15,7 +15,6 @@ import { classifyLetter, LetterTyper, type P3 } from '../lib/asl/letters';
 import { loadLetterModel, type LetterGuess, type ReadLetter } from '../lib/asl/letterModel';
 import { SignSegmenter, hasHand, holisticFrame, isArmUp, toWindow } from '../lib/asl/preprocess';
 import { Recorder } from '../lib/asl/recorder';
-import { ClipRecorder } from '../lib/asl/clipRecorder';
 import { MotionSegmenter } from '../lib/asl/motion';
 import HowItWorks from './HowItWorks';
 import LetterGuide from './LetterGuide';
@@ -81,7 +80,6 @@ export default function SignTranslator() {
   const typerRef = useRef(new LetterTyper());
   const recorderRef = useRef(new Recorder());
   const motionRef = useRef(new MotionSegmenter()); // cuts the spelling hand's movement into moves
-  const clipRecorderRef = useRef(new ClipRecorder()); // records moves for training (with ?record)
   const clipLabelRef = useRef<string | null>(null); // J, Z or other while that key is held
   const moveLabelRef = useRef<string | null>(null); // the label held during the current move
   const modeRef = useRef<Mode>('letters');
@@ -278,19 +276,27 @@ export default function SignTranslator() {
       wasSigningRef.current = active;
     }
 
-    /** Cuts the hand's movement into moves and, while J, Z or 0 is held, saves them for training. */
+    /**
+     * Cuts the hand's movement into moves. While J, Z or 0 is held, says whether each move
+     * was a good one. (The frames themselves go into the CSV; the training notebook cuts
+     * them into moves with the same rules.)
+     */
     function recordMoves(hand: P3[] | undefined) {
       const motion = motionRef.current;
       const move = motion.push(hand);
       if (motion.moving && clipLabelRef.current) moveLabelRef.current = clipLabelRef.current;
       const label = moveLabelRef.current;
       if (move || motion.discarded) {
-        if (label && move) {
-          clipRecorderRef.current.add(label, move);
-          setClipCounts(clipRecorderRef.current.counts());
+        const stillHeld = clipLabelRef.current === label; // so the whole move made it into the CSV
+        if (label && move && stillHeld) {
+          setClipCounts((counts) => ({ ...counts, [label]: (counts[label] ?? 0) + 1 }));
           setLastMove(`Saved: ${label === 'other' ? 'an other move' : label}`);
+        } else if (label && move) {
+          setLastMove('Not saved: you let go of the key too early. Hold it until it says “Saved”.');
         } else if (label && motion.discarded === 'too long') {
-          setLastMove('Not saved: that move was too long. Do one letter, then hold still.');
+          setLastMove('Not saved: that move was too long. Draw one letter, then hold still.');
+        } else if (label && motion.discarded === 'jumped') {
+          setLastMove('Not saved: the dots jumped to another hand. Keep your other hand out of the picture.');
         }
         moveLabelRef.current = null;
       }
@@ -358,13 +364,12 @@ export default function SignTranslator() {
     const recorder = recorderRef.current;
     const onKeyDown = (event: KeyboardEvent) => {
       const key = event.key.toUpperCase();
-      if (/^[A-Z]$/.test(key)) {
-        recorder.label = key;
-        setRecordingLetter(key);
-      }
-      // Moving letters: J and Z, and 0 for "other" moves (between letters, waving, and so on).
-      if (key === 'J' || key === 'Z') clipLabelRef.current = key;
-      if (key === '0') clipLabelRef.current = 'other';
+      // A–Z records that letter; 0 records "other" moves (between letters, waving, and so on).
+      const label = /^[A-Z]$/.test(key) ? key : key === '0' ? 'other' : null;
+      if (!label) return;
+      recorder.label = label;
+      setRecordingLetter(label);
+      if (label === 'J' || label === 'Z' || label === 'other') clipLabelRef.current = label;
     };
     const onKeyUp = () => {
       clipLabelRef.current = null;
@@ -554,36 +559,35 @@ export default function SignTranslator() {
 
             {recordMode && (
               <div className="border-t border-line p-5 text-sm">
-                <h2 className="font-bold">Recording still letters</h2>
-                <p className="mt-1 text-muted">
-                  {mode !== 'letters'
-                    ? 'Switch to Letters to record.'
-                    : recordingLetter
-                      ? `Recording ${recordingLetter}…`
-                      : `Hold a letter key to record that letter. Examples saved: ${recordedCount}`}
-                </p>
-                <ActionButton onClick={() => recorderRef.current.download()} className="mt-3">
-                  Download still letters (CSV)
-                </ActionButton>
-
-                {mode === 'letters' && (
+                {mode !== 'letters' ? (
+                  <p className="text-muted">Switch to Letters to record training data.</p>
+                ) : (
                   <>
-                    <h2 className="mt-5 border-t border-line pt-4 font-bold">Moving letters (J and Z)</h2>
-                    <p className="mt-1 text-muted">
-                      Hold J or Z, draw that letter once, then hold still until the dot turns grey. One letter per key
-                      press. Hold 0 while you move between other letters, so the model learns what isn&apos;t J or Z.
-                    </p>
-                    <p className="mt-2 flex items-center gap-2 font-semibold">
+                    <h2 className="font-bold">Recording training data</h2>
+                    <ul className="mt-1 list-disc space-y-1 pl-5 text-muted">
+                      <li>Still letters: hold the letter&apos;s key while you show the letter.</li>
+                      <li>J and Z: hold the key, draw the letter once, then hold still until it says “Saved”.</li>
+                      <li>Other moves: hold 0 while you wave or move between letters.</li>
+                      <li>Keep your other hand out of the picture.</li>
+                    </ul>
+                    <p className="mt-3 flex items-center gap-2 font-semibold">
                       <span className={`h-2.5 w-2.5 rounded-full ${moving ? 'bg-accent' : 'bg-line'}`} />
                       {moving ? 'Hand moving' : 'Hand still'}
+                      {recordingLetter && <span className="font-normal text-muted">· recording {recordingLetter}</span>}
                     </p>
                     <p className="mt-1 text-muted">
-                      Moves saved: J {clipCounts.J ?? 0}, Z {clipCounts.Z ?? 0}, other {clipCounts.other ?? 0}
+                      Frames saved: {recordedCount}. Moves saved: J {clipCounts.J ?? 0}, Z {clipCounts.Z ?? 0}, other{' '}
+                      {clipCounts.other ?? 0}.
                     </p>
                     {lastMove && <p className="mt-1 font-semibold">{lastMove}</p>}
-                    <ActionButton onClick={() => clipRecorderRef.current.download()} className="mt-3">
-                      Download moving letters (JSON)
-                    </ActionButton>
+                    <button
+                      type="button"
+                      onClick={() => recorderRef.current.download()}
+                      className="mt-3 rounded-lg bg-accent px-3 py-1.5 text-sm font-bold text-accent-ink"
+                    >
+                      Download recording (CSV)
+                    </button>
+                    <p className="mt-2 text-xs text-muted">Everything you recorded is in this one file.</p>
                   </>
                 )}
               </div>
