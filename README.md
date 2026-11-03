@@ -81,7 +81,7 @@ The tests in `src/lib/asl/__tests__/` cover:
 
 1. **Lint + unit tests**, which must pass before anything is deployed.
 2. **GitHub Pages:** builds the static site and publishes it.
-3. **AWS EC2:** builds the site and deploys it over SSH (`rsync`) to an Ubuntu server running nginx with HTTPS (Let's Encrypt). Setup guide: [`deploy/EC2_DEPLOYMENT.md`](deploy/EC2_DEPLOYMENT.md).
+3. **AWS EC2 (ready, but switched off):** builds the site and deploys it over SSH (`rsync`) to an Ubuntu server running nginx with HTTPS (Let's Encrypt). It's skipped until a server is connected; setup guide: [`deploy/EC2_DEPLOYMENT.md`](deploy/EC2_DEPLOYMENT.md). The live site runs on GitHub Pages.
 
 ## Project layout
 
