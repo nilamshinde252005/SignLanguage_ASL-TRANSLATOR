@@ -11,7 +11,7 @@ A website that watches you through your webcam and turns **American Sign Languag
 Three of its four models **I trained myself**, on recordings of my own hands that I made with a recorder built into the site.
 
 - **Letters mode:** all 26 letters. 24 are still hand shapes; J and Z are drawn in the air, so a second model reads the movement.
-- **Signs mode:** 250 everyday signs from an open-source model, plus **NAME, MY, HOW and YOU** from my own sign model.
+- **Signs mode:** 250 everyday signs from an open-source model, plus **NAME, MY, HOW and YOU** from my own sign model. After NAME it switches to Letters by itself so you can spell the name, then switches back.
 - **Private:** everything runs on your own device. No video is uploaded.
 
 ## The models I trained
@@ -102,6 +102,7 @@ The tests in `src/lib/asl/__tests__/` cover:
 
 ## Limitations
 
+- Signs are read **one at a time**: you lower your hands between signs (HOW, hands down, YOU). Reading continuous signing needs a different kind of model, trained on whole signed sentences, and is the natural next step.
 - My models are trained on **one person: me**. They will be less accurate for other people until they're trained on more signers.
 - The hardest letters are the ones where the thumb hides under the fingers (M, N, T) and E vs O.
 - It's a learning project, not an interpreter.

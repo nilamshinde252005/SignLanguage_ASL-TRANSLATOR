@@ -68,7 +68,8 @@ interface Reading {
 const HINTS: Record<Mode, string> = {
   letters:
     'Hold each letter still for half a second to type it. Draw J and Z in the air, then hold still. Lower your hand for a second to add a space.',
-  signs: 'Raise your hand, make one sign, then lower your hand. The word appears when your hand leaves the picture.',
+  signs:
+    'Raise your hand, make one sign, then lower your hand. The word appears when your hand leaves the picture. After NAME, it switches to Letters so you can spell the name.',
 };
 
 /** `?record` in the address shows the training-data recorder (for collecting new examples). */
@@ -107,6 +108,7 @@ export default function SignTranslator() {
   const signRecorderRef = useRef(new SignClipRecorder()); // records my own signs for training (with ?record)
   const signLabelRef = useRef<string | null>(null); // the word being recorded (null = not recording)
   const modeRef = useRef<Mode>('letters');
+  const spellingNameRef = useRef(false); // after the sign NAME: spelling the name in Letters mode, then back to Signs
   const lastReadingRef = useRef('');
 
   const recordMode = useRecordMode();
@@ -153,8 +155,9 @@ export default function SignTranslator() {
     setLastSign('');
   };
 
-  const switchMode = (next: Mode) => {
+  const switchMode = useCallback((next: Mode) => {
     modeRef.current = next;
+    spellingNameRef.current = false;
     segmenterRef.current.reset();
     signClipRef.current = [];
     typerRef.current = new LetterTyper();
@@ -167,7 +170,7 @@ export default function SignTranslator() {
     setSigning(false);
     setMode(next);
     showReading(null, null, next === 'letters' ? 'Show one hand to the camera' : 'Raise your hand and make one sign');
-  };
+  }, [showReading]);
 
   useEffect(() => {
     let cancelled = false;
@@ -334,6 +337,7 @@ export default function SignTranslator() {
         if (typed.trim()) lastStillRef.current = { letter: typed, at: now };
         addText(typed);
       }
+      if (typed === ' ' && spellingNameRef.current) switchMode('signs'); // the name is spelled: back to signs
     }
 
     function readSignFrame(result: HolisticLandmarkerResult) {
@@ -452,6 +456,13 @@ export default function SignTranslator() {
         if (best && best.probability >= MIN_SIGN_CONFIDENCE) {
           showReading(best.sign, best.probability, 'Added to the subtitles');
           addText(best.sign.toUpperCase() + ' ');
+          if (best.sign === 'name') {
+            // In ASL the name itself is fingerspelled right after NAME: switch to Letters for it (and back after).
+            switchMode('letters');
+            spellingNameRef.current = true;
+            showMovingUntilRef.current = performance.now() + 2500;
+            showReading(null, null, 'Now fingerspell the name, then lower your hand');
+          }
         } else {
           showReading(null, null, 'Not sure. Try that sign again');
         }
@@ -478,7 +489,7 @@ export default function SignTranslator() {
       landmarkerRef.current?.close();
       landmarkerRef.current = null;
     };
-  }, [addText, setStep, showReading]);
+  }, [addText, setStep, showReading, switchMode]);
 
   // Recording training data (only with ?record): hold a letter key to record that letter.
   useEffect(() => {
