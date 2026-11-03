@@ -365,17 +365,19 @@ export default function SignTranslator() {
   useEffect(() => {
     if (!recordMode) return;
     const recorder = recorderRef.current;
+    // A–Z records that letter. The space bar (or 0) records "other" moves: waving, moving between letters…
+    const labelFor = (key: string) => (/^[a-z]$/i.test(key) ? key.toUpperCase() : key === ' ' || key === '0' ? 'other' : null);
     const onKeyDown = (event: KeyboardEvent) => {
-      const key = event.key.toUpperCase();
-      // A–Z records that letter; 0 records "other" moves (between letters, waving, and so on).
-      const label = /^[A-Z]$/.test(key) ? key : key === '0' ? 'other' : null;
+      const label = labelFor(event.key);
       if (!label) return;
+      if (event.key === ' ') event.preventDefault(); // don't scroll the page or press a focused button
       if (!event.repeat) setLastMove(null); // a new key press: clear the old result
       recorder.label = label;
       setRecordingLetter(label);
       if (label === 'J' || label === 'Z' || label === 'other') clipLabelRef.current = label;
     };
-    const onKeyUp = () => {
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === ' ') event.preventDefault();
       clipLabelRef.current = null;
       recorder.label = null;
       setRecordingLetter(null);
@@ -590,7 +592,7 @@ export default function SignTranslator() {
                     <ul className="mt-1 list-disc space-y-1 pl-5 text-muted">
                       <li>Still letters: hold the letter&apos;s key while you show the letter.</li>
                       <li>J and Z: hold the key, draw the letter once, then hold still until it says “Saved”.</li>
-                      <li>Other moves: hold 0 while you wave or move between letters.</li>
+                      <li>Other moves: hold the space bar while you wave or move between letters.</li>
                       <li>Keep your other hand out of the picture.</li>
                     </ul>
                     <p className="mt-3 flex items-center gap-2 font-semibold">
