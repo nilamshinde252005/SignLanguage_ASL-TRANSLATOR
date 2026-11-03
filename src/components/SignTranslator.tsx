@@ -82,6 +82,7 @@ export default function SignTranslator() {
   const motionRef = useRef(new MotionSegmenter()); // cuts the spelling hand's movement into moves
   const clipLabelRef = useRef<string | null>(null); // J, Z or other while that key is held
   const moveLabelRef = useRef<string | null>(null); // the label held during the current move
+  const clipCountsRef = useRef<Record<string, number>>({}); // good moves recorded per label
   const modeRef = useRef<Mode>('letters');
   const lastReadingRef = useRef('');
 
@@ -104,7 +105,7 @@ export default function SignTranslator() {
   const [recordedCount, setRecordedCount] = useState(0);
   const [moving, setMoving] = useState(false);
   const [clipCounts, setClipCounts] = useState<Record<string, number>>({});
-  const [lastMove, setLastMove] = useState('');
+  const [lastMove, setLastMove] = useState<{ saved: boolean; text: string } | null>(null);
 
   const setStep = useCallback((part: keyof Loading, step: Step) => setLoading((l) => ({ ...l, [part]: step })), []);
   const addText = useCallback((text: string) => setSubtitle((s) => s + text), []);
@@ -289,14 +290,16 @@ export default function SignTranslator() {
       if (move || motion.discarded) {
         const stillHeld = clipLabelRef.current === label; // so the whole move made it into the CSV
         if (label && move && stillHeld) {
-          setClipCounts((counts) => ({ ...counts, [label]: (counts[label] ?? 0) + 1 }));
-          setLastMove(`Saved: ${label === 'other' ? 'an other move' : label}`);
+          const count = (clipCountsRef.current[label] ?? 0) + 1;
+          clipCountsRef.current = { ...clipCountsRef.current, [label]: count };
+          setClipCounts(clipCountsRef.current);
+          setLastMove({ saved: true, text: `Saved ${label === 'other' ? 'other move' : label} · ${count} so far` });
         } else if (label && move) {
-          setLastMove('Not saved: you let go of the key too early. Hold it until it says “Saved”.');
+          setLastMove({ saved: false, text: 'Not saved: you let go too early. Hold the key until it says Saved.' });
         } else if (label && motion.discarded === 'too long') {
-          setLastMove('Not saved: that move was too long. Draw one letter, then hold still.');
+          setLastMove({ saved: false, text: 'Not saved: too long. Do ONE move, then freeze.' });
         } else if (label && motion.discarded === 'jumped') {
-          setLastMove('Not saved: the dots jumped to another hand. Keep your other hand out of the picture.');
+          setLastMove({ saved: false, text: 'Not saved: your other hand got in the picture.' });
         }
         moveLabelRef.current = null;
       }
@@ -367,6 +370,7 @@ export default function SignTranslator() {
       // A–Z records that letter; 0 records "other" moves (between letters, waving, and so on).
       const label = /^[A-Z]$/.test(key) ? key : key === '0' ? 'other' : null;
       if (!label) return;
+      if (!event.repeat) setLastMove(null); // a new key press: clear the old result
       recorder.label = label;
       setRecordingLetter(label);
       if (label === 'J' || label === 'Z' || label === 'other') clipLabelRef.current = label;
@@ -448,6 +452,25 @@ export default function SignTranslator() {
                 <p className="absolute inset-0 grid place-items-center p-6 text-center text-white/75">
                   {loading.camera === 'loading' ? 'Allow camera access to start' : 'Camera off'}
                 </p>
+              )}
+
+              {recordMode && mode === 'letters' && (
+                <div className="absolute inset-x-3 top-3 flex flex-wrap items-start justify-between gap-2 text-sm font-bold sm:text-base">
+                  <span
+                    className={`flex items-center gap-2 rounded-full px-3 py-1 ${recordingLetter ? 'bg-accent text-accent-ink' : 'bg-black/75 text-white'}`}
+                  >
+                    <span className={`h-2.5 w-2.5 rounded-full ${moving ? 'animate-pulse bg-current' : 'bg-white/40'}`} />
+                    {recordingLetter ? `Recording ${recordingLetter}` : 'Not recording'} · {moving ? 'moving' : 'still'}
+                  </span>
+                  {lastMove && (
+                    <span
+                      className={`rounded-xl px-3 py-1 text-white ${lastMove.saved ? 'bg-[#15803d]' : 'bg-[#b42318]'}`}
+                    >
+                      {lastMove.saved ? '✓ ' : '✗ '}
+                      {lastMove.text}
+                    </span>
+                  )}
+                </div>
               )}
 
               {signing && (
@@ -579,7 +602,7 @@ export default function SignTranslator() {
                       Frames saved: {recordedCount}. Moves saved: J {clipCounts.J ?? 0}, Z {clipCounts.Z ?? 0}, other{' '}
                       {clipCounts.other ?? 0}.
                     </p>
-                    {lastMove && <p className="mt-1 font-semibold">{lastMove}</p>}
+                    {lastMove && <p className="mt-1 font-semibold">{lastMove.text}</p>}
                     <button
                       type="button"
                       onClick={() => recorderRef.current.download()}
