@@ -439,8 +439,12 @@ export default function SignTranslator() {
         const readMySign = readMySignRef.current;
         const [signs, mine] = await Promise.all([classify(input), readMySign ? readMySign(clip) : null]);
         // My own model wins when it's sure it saw one of its words (like NAME).
-        const myWord = mine && mine.label !== 'other' && mine.probability >= MIN_MY_SIGN_CONFIDENCE;
-        const top = myWord ? [{ sign: mine.label.toLowerCase(), probability: mine.probability }, ...signs.slice(0, 2)] : signs;
+        const myWord =
+          mine && mine.label !== 'other' && mine.probability >= MIN_MY_SIGN_CONFIDENCE
+            ? { sign: mine.label.toLowerCase(), probability: mine.probability }
+            : null;
+        // Both models can know a word (the 250-sign model also has "my"), so list each word once.
+        const top = myWord ? [myWord, ...signs.filter((g) => g.sign !== myWord.sign).slice(0, 2)] : signs;
         setGuesses(top);
         const handFrames = frames.filter(hasHand).length;
         setTip(handFrames < MIN_HAND_FRAMES ? 'That was very quick. Try signing a little slower.' : '');
