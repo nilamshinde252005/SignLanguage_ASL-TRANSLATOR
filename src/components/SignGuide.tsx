@@ -1,5 +1,9 @@
 import signs from '../../public/models/asl_transformer/signs.json';
+import mySigns from '../../public/models/my_signs/my_signs.json';
 import { prettySign } from '../lib/asl/classifier';
+
+// Words my own sign model knows (trained in training/train_signs.ipynb).
+const MY_SIGNS = mySigns.filter((word) => word !== 'other').map((word) => word.toLowerCase());
 
 // Everyday words from the sign model's 250, in the order you might use them.
 const EVERYDAY = [
@@ -21,18 +25,10 @@ export default function SignGuide({ current }: { current: string | null }) {
         Everyday words the sign model knows. Raise your hand, make one sign, then lower your hand.
       </p>
 
-      <ul className="mt-5 flex flex-wrap gap-2">
-        {EVERYDAY.map((word) => (
-          <li
-            key={word}
-            className={`rounded-full border px-3.5 py-1.5 text-sm font-semibold transition-colors ${
-              word === current ? 'border-accent bg-accent-soft' : 'border-line bg-surface'
-            }`}
-          >
-            {word}
-          </li>
-        ))}
-      </ul>
+      <Chips words={EVERYDAY} current={current} />
+
+      <p className="mt-6 text-sm font-semibold">Signs the 250-word model doesn&apos;t know, from my own trained model:</p>
+      <Chips words={MY_SIGNS} current={current} />
 
       <details className="mt-5 max-w-3xl">
         <summary className="cursor-pointer text-sm font-semibold text-accent">
@@ -49,5 +45,22 @@ export default function SignGuide({ current }: { current: string | null }) {
         , a free ASL video dictionary.
       </p>
     </section>
+  );
+}
+
+function Chips({ words, current }: { words: string[]; current: string | null }) {
+  return (
+    <ul className="mt-3 flex flex-wrap gap-2">
+      {words.map((word) => (
+        <li
+          key={word}
+          className={`rounded-full border px-3.5 py-1.5 text-sm font-semibold transition-colors ${
+            word === current ? 'border-accent bg-accent-soft' : 'border-line bg-surface'
+          }`}
+        >
+          {word}
+        </li>
+      ))}
+    </ul>
   );
 }

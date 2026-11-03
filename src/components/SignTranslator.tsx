@@ -5,7 +5,8 @@
  *  - Letters mode: all 26 fingerspelled letters, read by my own two trained models: one for still hand
  *                  shapes (24 letters; the old rules are a backup) and one for moves (J and Z).
  *  - Signs mode:   250 everyday signs, read by "ASL Realtime Transformer" by Ceyda Akin (CC BY 4.0),
- *                  preprocessing ported from github.com/ceydaakin/asl-realtime (MIT).
+ *                  preprocessing ported from github.com/ceydaakin/asl-realtime (MIT), plus a few
+ *                  signs it doesn't know (like NAME) from my own trained model.
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
@@ -17,6 +18,7 @@ import { loadLetterModel, type LetterGuess, type ReadLetter } from '../lib/asl/l
 import { SignSegmenter, hasHand, holisticFrame, isArmUp, toWindow } from '../lib/asl/preprocess';
 import { Recorder } from '../lib/asl/recorder';
 import { clipFrame, SignClipRecorder } from '../lib/asl/signClips';
+import { loadMySignModel, MIN_MY_SIGN_CONFIDENCE, type ReadMySign } from '../lib/asl/signModel';
 import { MotionSegmenter } from '../lib/asl/motion';
 import {
   addMovingLetter,
@@ -84,6 +86,7 @@ export default function SignTranslator() {
 
   const landmarkerRef = useRef<HolisticLandmarker | null>(null);
   const classifyRef = useRef<Classify | null>(null);
+  const readMySignRef = useRef<ReadMySign | null>(null); // my own sign model (null = not loaded)
   const readLetterRef = useRef<ReadLetter | null>(null); // my trained letter model (null = not loaded)
   const letterGuessRef = useRef<LetterGuess | null>(null); // its most recent answer
   const letterBusyRef = useRef(false); // true while the letter model is thinking
@@ -216,6 +219,16 @@ export default function SignTranslator() {
       }
     }
 
+    // ---- 3b. My own sign model, for words the 250-sign model doesn't know (optional) ----
+    async function loadMySigns() {
+      try {
+        const readMySign = await loadMySignModel();
+        if (!cancelled) readMySignRef.current = readMySign;
+      } catch (err) {
+        console.error('My sign model failed to load, so only the 250 signs work:', err);
+      }
+    }
+
     // ---- 3. The sign model (optional: letters still work without it) ----
     async function loadSigns() {
       try {
@@ -337,7 +350,7 @@ export default function SignTranslator() {
       setSigning(active);
       if (frames) {
         saveSignClip(clip);
-        recognise(frames);
+        recognise(frames, clip);
       }
       else if (active && !wasSigningRef.current) showReading(null, null, 'Watching your sign…');
       else if (!active && wasSigningRef.current) showReading(null, null, 'Raise your hand and make one sign');
@@ -415,7 +428,7 @@ export default function SignTranslator() {
       setLastSign(`Saved ${label === 'other' ? 'other sign' : label} · ${count} so far`);
     }
 
-    async function recognise(frames: Float32Array[]) {
+    async function recognise(frames: Float32Array[], clip: Float32Array[]) {
       const classify = classifyRef.current;
       if (!classify || signBusyRef.current) return;
       signBusyRef.current = true;
@@ -423,7 +436,11 @@ export default function SignTranslator() {
       try {
         const input = toWindow(frames);
         if (!input.length) return showReading(null, null, 'Raise your hand and make one sign');
-        const top = await classify(input);
+        const readMySign = readMySignRef.current;
+        const [signs, mine] = await Promise.all([classify(input), readMySign ? readMySign(clip) : null]);
+        // My own model wins when it's sure it saw one of its words (like NAME).
+        const myWord = mine && mine.label !== 'other' && mine.probability >= MIN_MY_SIGN_CONFIDENCE;
+        const top = myWord ? [{ sign: mine.label.toLowerCase(), probability: mine.probability }, ...signs.slice(0, 2)] : signs;
         setGuesses(top);
         const handFrames = frames.filter(hasHand).length;
         setTip(handFrames < MIN_HAND_FRAMES ? 'That was very quick. Try signing a little slower.' : '');
@@ -446,6 +463,7 @@ export default function SignTranslator() {
     void loadLetters();
     void loadMoves();
     void loadSigns();
+    void loadMySigns();
     void startCamera();
 
     // ---- 6. Clean up when the page is closed ----
@@ -717,7 +735,7 @@ export default function SignTranslator() {
                       <button
                         type="button"
                         disabled={!signWord}
-                        onClick={() => recordSign(signWord)}
+                        onClick={() => recordSign(signWord === 'OTHER' ? 'other' : signWord)}
                         className="rounded-lg bg-accent px-3 py-1.5 text-sm font-bold text-accent-ink disabled:opacity-40"
                       >
                         Record {signWord || '…'}
